@@ -1,3 +1,4 @@
 <launch>
-    <node pkg="websocket_ros" type="bridge_node" name="bridge_node" output="screen"/>
+    <node pkg="ros_websocket_bridge" type="bridge_node.py" name="bridge_node" output="screen" />
+
 </launch>
