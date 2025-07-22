@@ -4,11 +4,14 @@
 
 1. **Install Docker**  
     Follow instructions at [docker.com](https://docs.docker.com/get-docker/) to install Docker on your system.
+   
+2. **Build Docker Image locally**  
     In the project directory, build the Docker image:
-        ```sh
-        docker build -t ros_websocket .
-        ```
-2. **Launch ROS Noetic Docker Environment**  
+    ```sh
+    docker build -t ros_websocket .
+    ```
+    
+3. **Launch ROS Noetic Docker Environment**  
     Pull and run the ROS Noetic image:
     ```sh
     docker run -it --rm \
@@ -16,7 +19,7 @@
       ros_websocket
     ```
 
-3. **Test ROS-WebSocket Connection** 
+4. **Test ROS-WebSocket Connection** 
     Compile the ROS workspace and source the setup file:
     ```sh
     cd /my_ws
