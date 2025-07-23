@@ -24,7 +24,7 @@ class WebSocketManager:
         self.control_ws = None
         self.video_ws = None
         self.running = False
-        
+    
     def start(self, ros_bridge):
         """Start the asyncio event loop in a separate thread"""
         self.ros_bridge = ros_bridge
@@ -164,6 +164,11 @@ class ROSWebSocketBridge:
         ## request task ids 
         self.init_request_task_ids()
         
+        self.last_nav_info = {
+            "guid": None,
+            "task_id": None,
+            "requestType": None
+        }
         
     def init_request_task_ids(self):
         """Request task IDs from the control WebSocket"""
@@ -212,6 +217,7 @@ class ROSWebSocketBridge:
         """Initialize ROS topic subscribers"""
         rospy.Subscriber('/cameraF/camera/color/image_raw', Image, self.image_callback)
         rospy.Subscriber('/cloud_registered', PointCloud2, self.pointcloud_callback)
+        rospy.Subscriber('/goal_reached', Bool, self.goal_reached_callback)
         
         
     def init_publishers(self):
@@ -253,6 +259,32 @@ class ROSWebSocketBridge:
             self.ws_manager.send_control_message(json_control_data)
             rospy.logdebug("PointCloud sent to control WebSocket, task ID: " + str(self.task_id_map["request_pointcloud_capture"]))
             self.task_id_map["request_pointcloud_capture"] = None
+
+    def goal_reached_callback(self, msg):
+        """Handle goal reached messages - send to control WebSocket"""
+        if msg.data:  # Only send when goal is reached (True)
+            control_data = {
+                "title": "response_arrive_navigation",
+                "timestamp": int(time.time() * 1000),
+                "guid": self.last_nav_info.get("guid"),
+                "targetType": "client",
+                "targetId": "1",
+                "clientId": ROBOT_CODE,
+                "taskHistoryCode": self.last_nav_info.get("task_id"),
+                "requestType": self.last_nav_info.get("requestType", "start"),
+                "data": {
+                    "robotCode": ROBOT_CODE,
+                    "result": "ok"
+                }
+            }
+            json_control_data = json.dumps(control_data)
+            self.ws_manager.send_control_message(json_control_data)
+            self.last_nav_info = {
+                "guid": None,
+                "task_id": None,
+                "requestType": None
+            }
+            rospy.loginfo("Goal reached notification sent to control WebSocket")
 
     def image_callback(self, msg):
         """Handle image messages - send to video WebSocket"""
@@ -378,7 +410,11 @@ class ROSWebSocketBridge:
                 goal_msg.pose.orientation.w = orientation.get("w", 1.0)
                 self.nav_goal_pub.publish(goal_msg)
                 rospy.loginfo(f"Published navigation goal: position={position}, orientation={orientation}")
-                
+                self.last_nav_info = {
+                    "guid": guid,
+                    "task_id": task_id,
+                    "requestType": msg_json.get("requestType")
+                }
                 response_data = {
                     "title": "response_start_navigation",
                     "timestamp": int(time.time() * 1000),
@@ -420,6 +456,12 @@ class ROSWebSocketBridge:
                 self.cancel_nav_pub.publish(cancel_msg)
                 self.ws_manager.send_control_message(json.dumps(response_data))
                 self.task_id_map["request_stop_navigation"] = None
+                self.task_id_map["request_start_navigation"] = None
+                self.last_nav_info = {
+                    "guid": None,
+                    "task_id": None,
+                    "requestType": None
+                }
                 
             elif title == "request_robot_info":
                 rospy.loginfo("Robot info requested")

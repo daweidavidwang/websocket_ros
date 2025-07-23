@@ -19,8 +19,14 @@ class FakeRobot:
         # Publisher for point cloud data
         self.pointcloud_pub = rospy.Publisher('/cloud_registered', PointCloud2, queue_size=1)
         
+        # Publisher for goal reached status
+        self.goal_reached_pub = rospy.Publisher('/goal_reached', Bool, queue_size=1)
+        
         # CV Bridge for converting between OpenCV and ROS Image messages
         self.bridge = CvBridge()
+        
+        # Timer for goal reached callback
+        self.goal_timer = None
         
         # Image parameters
         self.width = 1920  # 1080P width
@@ -39,6 +45,7 @@ class FakeRobot:
         
         rospy.loginfo("Fake robot node started. Publishing 1080P images at 30Hz on /cameraF/camera/color/image_raw")
         rospy.loginfo("Publishing point clouds at 10Hz on /cloud_registered")
+        rospy.loginfo("Publishing goal reached status on /goal_reached topic")
         rospy.loginfo("Subscribed to /navigation_goal and /cancel_nav topics")
 
     def navigation_goal_callback(self, msg):
@@ -57,6 +64,15 @@ class FakeRobot:
         rospy.loginfo(f"  Z: {msg.pose.orientation.z:.3f}")
         rospy.loginfo(f"  W: {msg.pose.orientation.w:.3f}")
         rospy.loginfo("=" * 50)
+        
+        # Cancel any existing goal timer
+        if self.goal_timer is not None:
+            self.goal_timer.shutdown()
+            rospy.loginfo("Previous goal timer cancelled")
+        
+        # Set up a 10-second timer to publish goal reached
+        self.goal_timer = rospy.Timer(rospy.Duration(10.0), self.goal_reached_callback, oneshot=True)
+        rospy.loginfo("Started 10-second timer for goal reached notification")
 
     def cancel_navigation_callback(self, msg):
         """Callback for cancel navigation messages"""
@@ -64,6 +80,23 @@ class FakeRobot:
         rospy.loginfo("CANCEL NAVIGATION RECEIVED:")
         rospy.loginfo(f"Cancel: {msg.data}")
         rospy.loginfo("*" * 30)
+        
+        # Cancel the goal timer if it exists
+        if self.goal_timer is not None:
+            self.goal_timer.shutdown()
+            self.goal_timer = None
+            rospy.loginfo("Goal timer cancelled due to navigation cancellation")
+
+    def goal_reached_callback(self, event):
+        """Callback to publish goal reached status after 10 seconds"""
+        goal_reached_msg = Bool()
+        goal_reached_msg.data = True
+        
+        self.goal_reached_pub.publish(goal_reached_msg)
+        rospy.loginfo("GOAL REACHED: Published True on /goal_reached topic")
+        
+        # Reset the timer reference
+        self.goal_timer = None
 
     def generate_realistic_pointcloud(self):
         """Generate realistic point cloud data simulating an indoor environment"""
