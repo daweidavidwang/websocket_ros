@@ -25,7 +25,7 @@ class WebSocketManager:
         self.video_ws = None
         self.running = False
     
-    def start(self, ros_bridge):
+    def start(self, ros_bridge: 'ROSWebSocketBridge'):
         """Start the asyncio event loop in a separate thread"""
         self.ros_bridge = ros_bridge
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
@@ -73,7 +73,7 @@ class WebSocketManager:
                             message = await websocket.recv()
                             rospy.loginfo(f"Received from control ws: {message}")
                             # Publish to ROS topic
-                            self.ros_bridge.publish_control_message(message)
+                            asyncio.ensure_future(self.ros_bridge.publish_control_message(message))
                         except websockets.exceptions.ConnectionClosed:
                             rospy.logwarn("Control WebSocket connection closed")
                             break
@@ -87,6 +87,7 @@ class WebSocketManager:
                     await asyncio.sleep(5)  # Wait before reconnecting
                     
         self.control_ws = None
+        rospy.logwarn("Control WebSocket connection closed")
         
     async def _video_connection(self):
         """Handle video WebSocket connection"""
@@ -111,6 +112,7 @@ class WebSocketManager:
                     await asyncio.sleep(5)  # Wait before reconnecting
                     
         self.video_ws = None
+        rospy.logwarn("Video WebSocket connection closed")
         
     def send_control_message(self, message):
         """Send message to control WebSocket"""
@@ -234,12 +236,13 @@ class ROSWebSocketBridge:
             for field in msg.fields:
                 fields_info[f"{field.name}_size"] = field.count * np.dtype(field.datatype).itemsize if hasattr(np, 'dtype') else 4
 
+            client_id = "1"  # TODO: Replace with actual client ID
             control_data = {
                 "title": "response_pointcloud_capture",
                 "timestamp": int(time.time() * 1000),
                 "guid": "uuid-5678-req-pc",
                 "targetType": "robot",
-                "targetId": "1",
+                "targetId": client_id,
                 "clientId": ROBOT_CODE,
                 "taskHistoryCode": self.task_id_map["request_pointcloud_capture"],
                 "data": {
@@ -268,7 +271,7 @@ class ROSWebSocketBridge:
                 "timestamp": int(time.time() * 1000),
                 "guid": self.last_nav_info.get("guid"),
                 "targetType": "client",
-                "targetId": "1",
+                "targetId": self.last_nav_info.get("clientId"),
                 "clientId": ROBOT_CODE,
                 "taskHistoryCode": self.last_nav_info.get("task_id"),
                 "requestType": self.last_nav_info.get("requestType", "start"),
@@ -320,12 +323,13 @@ class ROSWebSocketBridge:
         
         if self.task_id_map["request_image_capture"] is not None:
             # Send to control WebSocket if task ID is set
+            client_id = "1"  # TODO: Replace with actual client ID
             control_data = {
                 "title": "response_image_capture",
                 "timestamp": int(time.time() * 1000),
                 "guid": "uuid-1234-req-img",
                 "targetType": "client",
-                "targetId": "1",
+                "targetId": client_id,
                 "clientId": ROBOT_CODE,
                 "taskHistoryCode": self.task_id_map["request_image_capture"],  # You may want to set this dynamically
                 "data": {
@@ -345,16 +349,17 @@ class ROSWebSocketBridge:
             self.task_id_map["request_image_capture"] = None
             
             
-    def publish_control_message(self, message):
+    async def publish_control_message(self, message):
         """Handle incoming control messages from WebSocket"""
         try:
             msg_json = json.loads(message)
             title = msg_json.get("title")
-            task_id = msg_json.get("taskHistoryCode")
+            task_history_code = msg_json.get("taskHistoryCode")
             guid = msg_json.get("guid")
-            if title and task_id and title.startswith("request_"):
-                self.task_id_map[title] = task_id
-                rospy.loginfo(f"Saved task ID for {title}: {task_id}")
+            client_id = msg_json.get("clientId") 
+            if title and task_history_code and title.startswith("request_"):
+                self.task_id_map[title] = task_history_code
+                rospy.loginfo(f"Saved task ID for {title}: {task_history_code}")
             if title == "request_video_start":
                 self.video_streaming = True
                 rospy.loginfo("Video streaming started")
@@ -363,9 +368,9 @@ class ROSWebSocketBridge:
                     "timestamp": int(time.time() * 1000),
                     "guid": guid,
                     "targetType": "robot",
-                    "targetId": "1",
+                    "targetId": client_id,
                     "clientId": ROBOT_CODE,
-                    "taskHistoryCode": task_id,
+                    "taskHistoryCode": task_history_code,
                     "data": {
                         "robotCode": ROBOT_CODE,
                         "result": "ok"
@@ -382,9 +387,9 @@ class ROSWebSocketBridge:
                     "timestamp": int(time.time() * 1000),
                     "guid": guid,
                     "targetType": "robot",
-                    "targetId": "1",
+                    "targetId": client_id,
                     "clientId": ROBOT_CODE,
-                    "taskHistoryCode": task_id,
+                    "taskHistoryCode": task_history_code,
                     "data": {
                         "robotCode": ROBOT_CODE,
                         "result": "ok"
@@ -412,17 +417,18 @@ class ROSWebSocketBridge:
                 rospy.loginfo(f"Published navigation goal: position={position}, orientation={orientation}")
                 self.last_nav_info = {
                     "guid": guid,
-                    "task_id": task_id,
-                    "requestType": msg_json.get("requestType")
+                    "task_id": task_history_code,
+                    "requestType": msg_json.get("requestType"),
+                    "clientId": client_id
                 }
                 response_data = {
                     "title": "response_start_navigation",
                     "timestamp": int(time.time() * 1000),
                     "guid": guid,
-                    "targetType": "robot",
-                    "targetId": "1",
+                    "targetType": "client",
+                    "targetId": client_id,
                     "clientId": ROBOT_CODE,
-                    "taskHistoryCode": task_id,
+                    "taskHistoryCode": task_history_code,
                     "requestType": msg_json.get("requestType"), 
                     "data": {
                         "robotCode": ROBOT_CODE,
@@ -441,9 +447,9 @@ class ROSWebSocketBridge:
                     "timestamp": int(time.time() * 1000),
                     "guid": guid,
                     "targetType": "robot",
-                    "targetId": "1",
+                    "targetId": client_id,
                     "clientId": ROBOT_CODE,
-                    "taskHistoryCode": task_id,
+                    "taskHistoryCode": task_history_code,
                     "requestType": msg_json.get("requestType"), 
                     "data": {
                         "robotCode": ROBOT_CODE,
@@ -470,9 +476,9 @@ class ROSWebSocketBridge:
                     "timestamp": int(time.time() * 1000),
                     "guid": guid,
                     "targetType": "client",
-                    "targetId": "1",
+                    "targetId": client_id,
                     "clientId": ROBOT_CODE,
-                    "taskHistoryCode": task_id,
+                    "taskHistoryCode": task_history_code,
                     "data": {
                         "robotCode": ROBOT_CODE,
                         "accid": "PF_TRON1A_042",
@@ -518,7 +524,7 @@ class ROSWebSocketBridge:
                     "timestamp": int(time.time() * 1000),
                     "guid": guid,
                     "targetType": "client",
-                    "targetId": "1",
+                    "targetId": client_id,
                     "clientId": ROBOT_CODE,
                     "data": {
                         "robotCode": ROBOT_CODE,

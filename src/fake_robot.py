@@ -71,8 +71,8 @@ class FakeRobot:
             rospy.loginfo("Previous goal timer cancelled")
         
         # Set up a 10-second timer to publish goal reached
-        self.goal_timer = rospy.Timer(rospy.Duration(10.0), self.goal_reached_callback, oneshot=True)
-        rospy.loginfo("Started 10-second timer for goal reached notification")
+        self.goal_timer = rospy.Timer(rospy.Duration(200.0), self.goal_reached_callback, oneshot=True)
+        rospy.loginfo("Started 20-second timer for goal reached notification")
 
     def cancel_navigation_callback(self, msg):
         """Callback for cancel navigation messages"""
@@ -240,14 +240,14 @@ class FakeRobot:
         img = np.zeros((self.height, self.width, 3), dtype=np.uint8)
         
         # Create a moving gradient pattern
-        offset = (self.frame_counter * 5) % 255
+        # offset = (self.frame_counter * 5) % 255
         
-        # Generate gradient background
-        for y in range(self.height):
-            for x in range(self.width):
-                img[y, x, 0] = (x + offset) % 255  # Blue channel
-                img[y, x, 1] = (y + offset) % 255  # Green channel
-                img[y, x, 2] = ((x + y + offset) // 2) % 255  # Red channel
+        # # Generate gradient background
+        # for y in range(self.height):
+        #     for x in range(self.width):
+        #         img[y, x, 0] = (x + offset) % 255  # Blue channel
+        #         img[y, x, 1] = (y + offset) % 255  # Green channel
+        #         img[y, x, 2] = ((x + y + offset) // 2) % 255  # Red channel
         
         # Add some geometric shapes
         center_x, center_y = self.width // 2, self.height // 2
@@ -260,6 +260,9 @@ class FakeRobot:
         # Add frame counter text
         cv2.putText(img, f"Frame: {self.frame_counter}", (50, 50), 
                    cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 3)
+        
+        # Resize the image to 160x90 for testing
+        img = cv2.resize(img, (160, 90), interpolation=cv2.INTER_LINEAR)
         
         return img
 
