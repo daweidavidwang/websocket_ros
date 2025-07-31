@@ -12,7 +12,6 @@ catkin_package()
 # Install Python scripts
 catkin_install_python(PROGRAMS
   src/fake_robot.py
-  src/bridge_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

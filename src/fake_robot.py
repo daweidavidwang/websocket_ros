@@ -8,10 +8,11 @@ from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Bool, Header
 from cv_bridge import CvBridge
 import struct
+import argparse
 
 class FakeRobot:
-    def __init__(self):
-        rospy.init_node('fake_robot_node', anonymous=True)
+    def __init__(self, log_level=rospy.INFO):
+        rospy.init_node('fake_robot_node', anonymous=True, log_level=log_level)
         
         # Publisher for camera images
         self.image_pub = rospy.Publisher('/cameraF/camera/color/image_raw', Image, queue_size=1)
@@ -262,7 +263,7 @@ class FakeRobot:
                    cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 3)
         
         # Resize the image to 160x90 for testing
-        img = cv2.resize(img, (160, 90), interpolation=cv2.INTER_LINEAR)
+        img = cv2.resize(img, (1280, 720), interpolation=cv2.INTER_LINEAR)
         
         return img
 
@@ -292,8 +293,23 @@ class FakeRobot:
         rospy.spin()
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Fake Robot ROS Node')
+    parser.add_argument('--log-level', type=str, default='info',
+                        choices=['debug', 'info', 'warn', 'error', 'fatal'],
+                        help='Set the ROS logging level (default: info)')
+    args, _ = parser.parse_known_args()
+
+    log_level_mapping = {
+        'debug': rospy.DEBUG,
+        'info': rospy.INFO,
+        'warn': rospy.WARN,
+        'error': rospy.ERROR,
+        'fatal': rospy.FATAL
+    }
+    rospy_log_level = log_level_mapping.get(args.log_level.lower(), rospy.INFO)
+
     try:
-        fake_robot = FakeRobot()
+        fake_robot = FakeRobot(log_level=rospy_log_level)
         fake_robot.run()
     except rospy.ROSInterruptException:
         rospy.loginfo("Fake robot node terminated.")
