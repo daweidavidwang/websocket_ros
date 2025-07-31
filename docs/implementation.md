@@ -1,58 +1,170 @@
-# Architectrue
+# ROS WebSocket Bridge - Refactoring Implementation Plan
 
-- class WebsocketClient: handle websocket message from and to cloud.
- - running in an asyncio loop
-- class RosBridge: handle communication bwtween WebsocketClient and ROS system.
- - Note: topic subscribe callback are running in other thread
+This document outlines the planned refactoring of the current `bridge_node.py` implementation to improve architecture, maintainability, and performance.
 
-class should be in a single file.
+## Architecture Overview
 
- ## Heartbeat
-Use asyncio.sleep() to do heartbeat every 5s.
+**Target Architecture:**
+- `WebsocketClient`: Handles WebSocket connections and message processing
+  - Runs in dedicated asyncio event loop
+  - Manages dual connections (control + video channels)
+  - Processes incoming messages and routes to ROS bridge
+- `RosBridge`: Handles ROS system integration and topic management
+  - Manages ROS publishers/subscribers
+  - Maintains navigation state machine
+  - Provides async interface for WebSocket client
+  - Note: ROS callbacks run in separate threads
 
-# communication between WebsocketClient and RosBridge
-- transfer data via queue
-- calling of functions that relative to ros from WebsocketClient should wrap into asyncio.to_thread()
+**Implementation:** Classes in seperate files for readability.
 
-## handle image and pointcloud request
-Take handle image as example:
-- `WebsocketClient` call RosBridge.getImage() in asyncio.to_thread() and await for data from queue, timeout 1s. If success, response the image data.
-- `RosBridge.getImage` create a size 1 queue, subscribe the image topic. Then wait for data from queue and return.
-- `image_subscribe_callback` get a frame of image and put it into queue, cancel the subscribe.
+## Heartbeat Implementation
+- Use `asyncio.create_task()` with `asyncio.sleep(5)` in continuous loop
+- Replace current ROS Timer-based approach
+- Send heartbeat messages directly from WebSocket client
+- Maintain connection health monitoring
 
-## handle video stream request
-### When start video stream is requested
-- `WebsocketClient` create a streamming task with a size 1 asyncio.queue, call RosBridge.setupVideoStream in asyncio.to_thread() with async putFrame(frame) function and response. If video is streamming, response error.
-- `async putFrame` put the frame into queue. If queue is full, pop the first and then put in.
-- `streamming task` await for data from queue and then send the frame as binary jpeg blob.
-- `RosBridge.setupVideoStream` subscribe the image topic with stream callback. hold the subscribe object for later cancel.
-- `stream callback` put frame using async putFrame in asyncio.run_coroutine_threadsafe.
+## Inter-Class Communication
 
-### when stop video stream is requested
-- `WebsocketClient` call RosBridge.stopVideoStream in asyncio.to_thread(), stop streamming task, destroy queue then response.  If video is not streamming, response error.
-- `RosBridge.stopVideoStream` cancel topic subscription.
+**Queue-Based Data Transfer:**
+- Use `asyncio.Queue` or `Queue(std)` for async communication between classes
+- Separate queues for different data types (images, point clouds, responses)
+- Non-blocking queue operations with timeout handling
 
-## handle navigation request
-RosBridge should maintain the status of navigation
- - not_init: default status. start_position is not set. when set, goto idle
- - idle: robot ready to navigate
- - navigating: robot is navigating to the target pose. back to idle when complete
+**Thread Safety:**
+- All ROS-related function calls from `WebsocketClient` must use `asyncio.to_thread()`
+- Ensures proper async/sync boundary management
+- Prevents blocking the asyncio event loop
 
-### when start navigation is requested
- - `WebsocketClient` If robot status is idle, call RosBridge.startNavigation() in asyncio.to_thread() with complete_callback. If not, response error.
- - `RosBridge.startNavigation` publish to /navigation_goal. subscribe /goal_reached with goal_reached_callback
- - `complete_callback` response navigation complete
- - `goal_reached_callback` call complete_callback in asyncio.run_coroutine_threadsafe. cancel subscription of /goal_reached
+## Image and Point Cloud Request Processing
 
-### when stop navigation is requsted
- - `WebsocketClient` If robot status is navigating, call RosBridge.stopNavigation() in asyncio.to_thread(). If not, response error.
- - `RosBridge.stopNavigation` publish to /cancel_nav. 
-### when set start positon is requested
- - `WebsocketClient` If robot status is not_init or idle, call RosBridge.setStartPosition() in asyncio.to_thread(). If not, response error.
- - `RosBridge.setStartPosition` publish to /reset_robot_pos.
+**Improved On-Demand Processing:**
 
-## handle robot status request
-TODO. response mock data for now.
+### Image Capture Flow:
+1. `WebsocketClient` receives image request
+2. Calls `await asyncio.to_thread(RosBridge.getImage)` with 1-second timeout
+3. `RosBridge.getImage()` creates size-1 `queue(std)` and subscribes to `/cameraF/camera/color/image_raw`
+4. `image_callback` receives frame, puts data in queue, cancels subscription
+5. `getImage()` returns image data to WebSocket client
+6. Response sent via control channel
 
-## handle robot control request
-TODO. Not implement.
+**Benefits over current implementation:**
+- Eliminates persistent subscriptions for one-time requests
+- Reduces resource usage when not actively capturing
+- Better timeout handling and error recovery
+
+## Video Stream Request Processing
+
+### Start Video Stream:
+1. **State Check**: `WebsocketClient` verifies no active stream exists
+2. **Queue Creation**: Create size-1 `asyncio.Queue` for frame buffering
+3. **ROS Setup**: Call `await asyncio.to_thread(RosBridge.setupVideoStream, putFrame_callback)`
+4. **Streaming Task**: Create async task to continuously read from queue and send frames
+5. **ROS Subscription**: `setupVideoStream()` subscribes to image topic with callback
+6. **Frame Processing**: Callback uses `asyncio.run_coroutine_threadsafe(putFrame(frame))`
+7. **Response**: Send acknowledgment to control channel
+
+### Stop Video Stream:
+1. **State Check**: Verify active stream exists
+2. **Cleanup**: Call `await asyncio.to_thread(RosBridge.stopVideoStream)`
+3. **Task Termination**: Cancel streaming task and destroy queue
+4. **ROS Cleanup**: Cancel topic subscription
+5. **Response**: Send stop confirmation
+
+**Frame Buffering Logic:**
+```python
+async def putFrame(frame):
+    if queue.full():
+        queue.get_nowait()  # Drop oldest frame
+    await queue.put(frame)  # Add new frame
+```
+
+## Navigation Request Processing
+
+**Navigation State Machine:**
+```python
+class NavigationState(Enum):
+    NOT_INIT = "not_init"    # Default state, start position not set
+    IDLE = "idle"            # Ready to navigate
+    NAVIGATING = "navigating" # Currently navigating to goal
+```
+
+### State Transitions:
+- `NOT_INIT` → `IDLE`: When start position is set
+- `IDLE` → `NAVIGATING`: When navigation goal is sent
+- `NAVIGATING` → `IDLE`: When goal is reached or navigation is cancelled
+
+### Start Navigation Flow:
+1. **State Check**: Verify robot is in `IDLE` state
+2. **Goal Processing**: Call `await asyncio.to_thread(RosBridge.startNavigation, goal_data, complete_callback)`
+3. **ROS Publishing**: Publish `PoseStamped` to `/navigation_goal`
+4. **Goal Monitoring**: Subscribe to `/goal_reached` with `goal_reached_callback`
+5. **State Update**: Set state to `NAVIGATING`
+6. **Response**: Send start acknowledgment
+7. **Completion**: `goal_reached_callback` triggers `complete_callback` via `run_coroutine_threadsafe`
+
+### Stop Navigation Flow:
+1. **State Check**: Verify robot is in `NAVIGATING` state
+2. **Cancellation**: Call `await asyncio.to_thread(RosBridge.stopNavigation)`
+3. **ROS Publishing**: Publish to `/cancel_nav`
+4. **Cleanup**: Cancel goal monitoring subscription
+5. **State Update**: Set state to `IDLE`
+6. **Response**: Send stop confirmation
+
+### Set Start Position Flow:
+1. **State Check**: Allow only in `NOT_INIT` or `IDLE` states
+2. **Position Setting**: Call `await asyncio.to_thread(RosBridge.setStartPosition, pose_data)`
+3. **ROS Publishing**: Publish `PoseStamped` to `/reset_robot_pos`
+4. **State Update**: Set state to `IDLE` if was `NOT_INIT`
+5. **Response**: Send position set confirmation
+
+## Robot Status Request Processing
+
+**Current Status**: Returns mock data (matches current implementation)
+
+**Future Enhancement**: Integrate with actual robot sensors
+- Battery level from hardware interface
+- Component status from diagnostic topics
+- Current position from odometry/localization
+- Real-time status updates
+
+## Robot Control Request Processing
+
+**Status**: Not implemented in current version
+
+**Planned Implementation**:
+- Direct robot movement commands (velocity control)
+- Emergency stop functionality
+- Manual mode switching
+- Integration with robot control topics
+
+## Benefits of Refactored Architecture
+
+### Performance Improvements:
+- Reduced resource usage with on-demand subscriptions
+- Better frame dropping for video streaming
+- Proper async/await patterns throughout
+
+### Maintainability:
+- Clear separation of concerns between WebSocket and ROS handling
+- State machine for navigation provides clearer logic flow
+- Queue-based communication enables better testing and debugging
+
+### Reliability:
+- Improved error handling with proper timeout mechanisms
+- State validation prevents invalid operation sequences
+- Better resource cleanup on shutdown
+
+## Migration Plan
+
+1. **Phase 1**: Implement queue-based communication infrastructure
+2. **Phase 2**: Refactor image/pointcloud handling to on-demand model
+3. **Phase 3**: Implement navigation state machine
+4. **Phase 4**: Migrate video streaming to new architecture
+5. **Phase 5**: Testing and validation with fake_robot.py
+
+## Backward Compatibility
+
+- WebSocket message formats remain unchanged
+- ROS topic interface stays identical
+- External behavior preserved during refactoring
+- Gradual migration possible with feature flags
