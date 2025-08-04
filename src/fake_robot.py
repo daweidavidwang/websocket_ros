@@ -251,12 +251,12 @@ class FakeRobot:
         #         img[y, x, 2] = ((x + y + offset) // 2) % 255  # Red channel
         
         # Add some geometric shapes
-        center_x, center_y = self.width // 2, self.height // 2
-        radius = 100 + int(50 * np.sin(self.frame_counter * 0.1))
+        # center_x, center_y = self.width // 2, self.height // 2
+        # radius = 100 + int(50 * np.sin(self.frame_counter * 0.1))
         
-        cv2.circle(img, (center_x, center_y), radius, (255, 255, 255), 3)
-        cv2.rectangle(img, (center_x - 150, center_y - 150), 
-                     (center_x + 150, center_y + 150), (0, 255, 255), 2)
+        # cv2.circle(img, (center_x, center_y), radius, (255, 255, 255), 3)
+        # cv2.rectangle(img, (center_x - 150, center_y - 150), 
+        #              (center_x + 150, center_y + 150), (0, 255, 255), 2)
         
         # Add frame counter text
         cv2.putText(img, f"Frame: {self.frame_counter}", (50, 50), 

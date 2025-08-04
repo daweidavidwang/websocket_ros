@@ -120,22 +120,26 @@ class RosBridge:
         except queue.Empty:
             raise Exception("Failed to get point cloud within 1 second timeout")
 
-    def setup_video_stream(self, put_frame_callback):
+    def setup_video_stream(self):
         if self.video_sub:
             rospy.logwarn("Video stream already set up, stopping previous subscription")
             self.stop_video_stream()
 
         frame_id = 0
+        vs_queue = queue.Queue(maxsize=1)
         def frame_callback(msg):
             nonlocal frame_id
             try:
-                put_frame_callback((msg, frame_id))
+                if vs_queue.full():
+                    vs_queue.get_nowait()
+                vs_queue.put_nowait((msg, frame_id))
                 frame_id = frame_id + 1
             except Exception as e:
                 rospy.logerr(f"Error in video frame callback: {e}")
 
         self.video_sub = rospy.Subscriber('/cameraF/camera/color/image_raw', Image, frame_callback)
         rospy.loginfo("Video stream subscription setup")
+        return vs_queue
 
     def stop_video_stream(self):
         if self.video_sub:

@@ -4,7 +4,6 @@ import asyncio
 import websockets
 import json
 import time
-import base64
 import io
 from PIL import Image as PILImage
 import numpy as np
@@ -13,6 +12,9 @@ from sensor_msgs.msg import PointField
 import contextvars
 import functools
 import logging
+import queue
+
+ROBOT_CODE = "robot3234324232"
 
 # Configure logging
 class CustomFormatter(logging.Formatter):
@@ -42,8 +44,6 @@ handler = logging.StreamHandler()
 handler.setFormatter(CustomFormatter())
 logger.addHandler(handler)
 
-ROBOT_CODE = "robot3234324232"
-
 def set_log_level(level_str: str):
     """Sets the logging level for the websocket_client logger."""
     level_map = {
@@ -72,7 +72,7 @@ class WebsocketClient:
         self.control_ws = None
         self.video_ws = None
         self.video_stream_task = None
-        self.video_stream_queue = None
+        self.video_stream_queue:None|queue.Queue = None
 
     async def connect(self):
         control_uri = "wss://gj-test.mnt-aihub.com:8443/control"
@@ -81,13 +81,13 @@ class WebsocketClient:
 
         await asyncio.gather(
             self._connect_websocket(control_uri, headers, self._handle_control_messages, "control"),
-            self._connect_websocket(video_uri, headers, None, "video")
+            self._connect_websocket(video_uri, headers, self._handle_video_messages, "video")
         )
 
     async def _connect_websocket(self, uri, headers, message_handler, name):
         while True:
             try:
-                async with websockets.connect(uri, extra_headers=headers) as websocket:
+                async with websockets.connect(uri, extra_headers=headers, ping_interval=20) as websocket:
                     if name == "control":
                         self.control_ws = websocket
                         logger.info(f"{name.capitalize()} WebSocket connected")
@@ -117,7 +117,7 @@ class WebsocketClient:
                     "guid": "uuid-3456-req-vp",
                     "targetType": "robot",
                     "targetId": "heartbeat",
-                    "clientId": "heartbeat",
+                    "clientId": ROBOT_CODE,
                     "data": {"robotCode": ROBOT_CODE, "result": "ok"}
                 }
                 await self.control_ws.send(json.dumps(heartbeat_data))
@@ -130,11 +130,25 @@ class WebsocketClient:
             try:
                 msg_json = json.loads(message)
                 logger.debug(f"Received control message: {msg_json}")
+                robot_code = msg_json.get("targetId", "None")
+                if robot_code != ROBOT_CODE:
+                    logger.warning(f"Received message for different robot: {robot_code}, ignoring")
+                    continue
                 await self._process_command(msg_json)
             except json.JSONDecodeError:
-                logger.warning(f"Received non-JSON message: {message}")
+                logger.warning(f"Received non-JSON control message: {message}")
             except Exception as e:
-                logger.error(f"Error processing message: {e}")
+                logger.error(f"Error processing control message: {e}")
+    
+    async def _handle_video_messages(self, websocket):
+        async for message in websocket:
+            try:
+                msg_json = json.loads(message)
+                logger.debug(f"Received video message: {msg_json}")
+            except json.JSONDecodeError:
+                logger.warning(f"Received non-JSON video message: {message}")
+            except Exception as e:
+                logger.error(f"Error processing video message: {e}")
 
     async def _process_command(self, msg):
         title = msg.get("title")
@@ -163,22 +177,20 @@ class WebsocketClient:
     async def handle_image_capture(self, msg):
         try:
             image_msg = await to_thread(self.ros_bridge.get_image)
-            response = {
-                "title": "response_image_capture",
-                "data": {
-                    "result": "ok",
-                    "height": image_msg.height,
-                    "width": image_msg.width,
-                    "encoding": image_msg.encoding,
-                    "is_bigendian": image_msg.is_bigendian,
-                    "step": image_msg.step,
-                    "data": image_msg.data.hex()
-                }
+            response = {"title": "response_image_capture"}
+            response["data"] = {
+                "result": "ok",
+                "height": image_msg.height,
+                "width": image_msg.width,
+                "encoding": image_msg.encoding,
+                "is_bigendian": image_msg.is_bigendian,
+                "step": image_msg.step,
+                "data": image_msg.data.hex()
             }
             logger.info(f"Image captured successfully", extra={'guid': msg.get('guid')})
         except Exception as e:
             logger.error(f"Error in handle_image_capture: {e}", extra={'guid': msg.get('guid')})
-            response = {"title": "response_image_capture", "data": {"result": "error", "message": str(e)}}
+            response["data"] = {"result": "error", "message": str(e)}
         
         await self.send_control_response(msg, response)
 
@@ -204,75 +216,79 @@ class WebsocketClient:
                 return fields_info_dict
 
             fields_info = convert_fields(pc_msg.fields)
-            response = {
-                "title": "response_pointcloud_capture",
-                "data": {
-                    "result": "ok",
-                    "height": pc_msg.height,
-                    "width": pc_msg.width,
-                    "fields": fields_info,
-                    "is_bigendian": pc_msg.is_bigendian,
-                    "point_step": pc_msg.point_step,
-                    "row_step": pc_msg.row_step,
-                    "data": pc_msg.data.hex(),
-                    "is_dense": pc_msg.is_dense
-                }
+            response = {"title": "response_pointcloud_capture"}
+            response["data"] = {
+                "result": "ok",
+                "height": pc_msg.height,
+                "width": pc_msg.width,
+                "fields": fields_info,
+                "is_bigendian": pc_msg.is_bigendian,
+                "point_step": pc_msg.point_step,
+                "row_step": pc_msg.row_step,
+                "data": pc_msg.data.hex(),
+                "is_dense": pc_msg.is_dense
             }
             logger.info("Point cloud captured successfully", extra={'guid': msg.get('guid')})
         except Exception as e:
             logger.error(f"Error in handle_pointcloud_capture: {e}", extra={'guid': msg.get('guid')})
-            response = {"title": "response_pointcloud_capture", "data": {"result": "error", "message": str(e)}}
+            response["data"] = {"result": "error", "message": str(e)}
 
         await self.send_control_response(msg, response)
 
     async def handle_video_start(self, msg):
         try:
+            response = {"title": "response_video_start"}
             if self.video_stream_task:
-                response = {"title": "response_video_start", "data": {"result": "error", "message": "Video stream already running"}}
+                response["data"] = {"result": "error", "message": "Video stream already running"}
                 logger.warning("Video stream already running, cannot start again", extra={'guid': msg.get('guid')})
             else:
-                self.video_stream_queue = asyncio.Queue(maxsize=1)
-
-                loop = asyncio.get_event_loop()
-                def _ros_video_callback(ros_image):
-                    asyncio.run_coroutine_threadsafe(self._put_frame_to_queue(ros_image), loop)
-
-                await to_thread(self.ros_bridge.setup_video_stream, _ros_video_callback)
+                self.video_stream_queue = await to_thread(self.ros_bridge.setup_video_stream)
                 self.video_stream_task = asyncio.create_task(self._stream_video_frames())
                 logger.info("Video stream started", extra={'guid': msg.get('guid')})
-                response = {"title": "response_video_start", "data": {"result": "ok"}}
+                response["data"] = {"result": "ok"}
         except Exception as e:
             logger.error(f"Error in handle_video_start: {e}", extra={'guid': msg.get('guid')})
-            response = {"title": "response_video_start", "data": {"result": "error", "message": str(e)}}
+            response["data"] = {"result": "error", "message": str(e)}
         
         await self.send_control_response(msg, response)
 
-    async def _put_frame_to_queue(self, ros_image):
-        if self.video_stream_queue.full():
-            self.video_stream_queue.get_nowait()
-        self.video_stream_queue.put_nowait(ros_image)
+    def _get_video_frame(self):
+        if not self.video_stream_queue:
+            raise Exception("Video stream queue is not initialized")
+        
+        try:
+            ros_image, frame_id = self.video_stream_queue.get(timeout=1.0)
+
+            if ros_image.encoding == "rgb8":
+                image_array = np.frombuffer(ros_image.data, dtype=np.uint8).reshape((ros_image.height, ros_image.width, 3))
+            elif ros_image.encoding == "bgr8":
+                image_array = np.frombuffer(ros_image.data, dtype=np.uint8).reshape((ros_image.height, ros_image.width, 3))
+                image_array = image_array[..., ::-1]
+            else:
+                raise ValueError(f"Unsupported image encoding: {ros_image.encoding}")
+            
+            image = PILImage.fromarray(image_array, 'RGB')
+            img_buffer = io.BytesIO()
+            image.save(img_buffer, format='JPEG', quality=50)
+            return (img_buffer, frame_id)
+            
+        except queue.Empty:
+            raise Exception("Failed to get video frame within 1 second timeout")
 
     async def _stream_video_frames(self):
         try:
-            while self.video_ws and self.video_ws.open:
-                ros_image, frame_id = await self.video_stream_queue.get()
-                
-                if ros_image.encoding == "rgb8":
-                    image_array = np.frombuffer(ros_image.data, dtype=np.uint8).reshape((ros_image.height, ros_image.width, 3))
-                elif ros_image.encoding == "bgr8":
-                    image_array = np.frombuffer(ros_image.data, dtype=np.uint8).reshape((ros_image.height, ros_image.width, 3))
-                    image_array = image_array[..., ::-1]
-                else:
-                    continue
-
-                image = PILImage.fromarray(image_array, 'RGB')
-                img_buffer = io.BytesIO()
-                image.save(img_buffer, format='JPEG', quality=95)
-                
+            while self.video_ws:
+                img_buffer, frame_id = await to_thread(self._get_video_frame)
                 await self.video_ws.send(img_buffer.getvalue())
-                logger.debug(f"Sent video frame: {frame_id}")
+                logger.debug(f"Sent video frame: {frame_id}, size: {len(img_buffer.getvalue())} bytes")
         except asyncio.CancelledError:
             logger.debug(f"Video streaming task cancelled")
+        except websockets.exceptions.ConnectionClosed:
+            logger.warning("Video WebSocket connection closed, stopping video stream")
+        except websockets.exceptions.ConnectionClosedOK:
+            logger.warning("Video WebSocket connection closed normally, stopping video stream")
+        except websockets.exceptions.ConnectionClosedError:
+            logger.warning("Video WebSocket connection closed with error, stopping video stream")
         except Exception as e:
             logger.error(f"Error in video streaming task: {e}")
         finally:
@@ -287,29 +303,29 @@ class WebsocketClient:
 
     async def handle_video_stop(self, msg):
         try:
+            response = {"title": "response_video_stop"}
             if self.video_stream_task:
                 self.video_stream_task.cancel()
                 logger.info("Video stream stopped", extra={'guid': msg.get('guid')})
-                response = {"title": "response_video_stop", "data": {"result": "ok"}}
+                response["data"] = {"result": "ok"}
             else:
                 logger.warning("Video stream not running, cannot stop", extra={'guid': msg.get('guid')})
-                response = {"title": "response_video_stop", "data": {"result": "error", "message": "Video stream not running"}}
+                response["data"] = {"result": "error", "message": "Video stream not running"}
         except Exception as e:
             logger.error(f"Error in handle_video_stop: {e}", extra={'guid': msg.get('guid')})
-            response = {"title": "response_video_stop", "data": {"result": "error", "message": str(e)}}
+            response["data"] = {"result": "error", "message": str(e)}
         
         await self.send_control_response(msg, response)
 
     async def handle_start_navigation(self, msg):
         try:
             goal_data = msg.get("data", {})
-            request_type = msg.get("requestType", "")
 
+            # Construct the goal reached callback
             loop = asyncio.get_event_loop()
             def _on_goal_reached():
                 response = {
                     "title": "response_arrive_navigation",
-                    "requestType": request_type,
                     "data": {"result": "ok"}
                 }
                 asyncio.run_coroutine_threadsafe(self.send_control_response(msg, response), loop)
@@ -318,14 +334,12 @@ class WebsocketClient:
             logger.info(f"Started navigation with goal: {goal_data}", extra={'guid': msg.get('guid')})
             response = {
                 "title": "response_start_navigation", 
-                "requestType": request_type, 
                 "data": {"result": "ok"}
             }
         except Exception as e:
             logger.error(f"Error in handle_start_navigation: {e}", extra={'guid': msg.get('guid')})
             response = {
                 "title": "response_start_navigation", 
-                "requestType": request_type, 
                 "data": {"result": "error", "message": str(e)}
             }
         
@@ -333,13 +347,12 @@ class WebsocketClient:
 
     async def handle_stop_navigation(self, msg):
         try:
-            request_type = msg.get("requestType", "")
             await to_thread(self.ros_bridge.stop_navigation)
             logger.info(f"Stopped navigation", extra={'guid': msg.get('guid')})
-            response = {"title": "response_stop_navigation", "requestType": request_type, "data": {"result": "ok"}}
+            response = {"title": "response_stop_navigation", "data": {"result": "ok"}}
         except Exception as e:
             logger.error(f"Error in handle_stop_navigation: {e}", extra={'guid': msg.get('guid')})
-            response = {"title": "response_stop_navigation", "requestType": request_type, "data": {"result": "error", "message": str(e)}}
+            response = {"title": "response_stop_navigation", "data": {"result": "error", "message": str(e)}}
         
         await self.send_control_response(msg, response)
 
@@ -379,8 +392,17 @@ class WebsocketClient:
                 "targetType": "client",
                 "targetId": original_msg.get("clientId"),
                 "clientId": ROBOT_CODE,
-                "taskHistoryCode": original_msg.get("taskHistoryCode"),
                 **response_data
             }
+
+            # Add optional fields if they exist in the original message
+            if "taskHistoryCode" in original_msg:
+                response["taskHistoryCode"] = original_msg.get("taskHistoryCode")
+            if "recordCode" in original_msg:
+                response["recordCode"] = original_msg.get("recordCode")
+            if "requestType" in original_msg:
+                response["requestType"] = original_msg.get("requestType")
+
+            response["data"]["robotCode"] = ROBOT_CODE
             logger.debug(f"Sending control response: {response}")
             await self.control_ws.send(json.dumps(response))
