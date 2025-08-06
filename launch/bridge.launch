@@ -1,4 +1,4 @@
 <launch>
-    <node pkg="ros_websocket_bridge" type="bridge_node.py" name="bridge_node" output="screen" />
+    <node pkg="ros_websocket_bridge" type="run_bridge_node.sh" args="--log-level=debug" name="bridge_node" cwd="node" output="screen" />
 
 </launch>

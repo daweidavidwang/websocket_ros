@@ -373,11 +373,20 @@ class WebsocketClient:
         try:
             robot_info = await to_thread(self.ros_bridge.get_robot_info)
             info = robot_info.get("data", {})
-            info["worldPosition"] = {
-                "x": 0,
-                "y": 0,
-                "z": 0
-            }
+            
+            # Get current robot position from ROS bridge
+            current_position = await to_thread(self.ros_bridge.get_current_position)
+            if current_position:
+                info["worldPosition"] = current_position
+            else:
+                # Fallback to default if position is not available
+                info["worldPosition"] = {
+                    "x": 0.0,
+                    "y": 0.0,
+                    "z": 0.0
+                }
+                logger.warning("Robot position not available, using default (0,0,0)", extra={'guid': msg.get('guid')})
+            
             response = {
                 "title": "response_robot_info",
                 "data": {
@@ -390,11 +399,17 @@ class WebsocketClient:
             response = {
                 "title": "response_robot_info",
                 "data": {
+                    "worldPosition": {
+                        "x": 0.0,
+                        "y": 0.0,
+                        "z": 0.0
+                    },
                     "result": "error",
                     "message": str(e)
                 }
             }
-        print(f"Robot info response: {response}")
+        
+        logger.info(f"Robot info response: {response}", extra={'guid': msg.get('guid')})
         await self.send_control_response(msg, response)
 
     async def handle_robot_manual_navigation(self, msg):

@@ -3,7 +3,7 @@
 import rospy
 from std_msgs.msg import Bool, Int32, String
 from sensor_msgs.msg import Image, PointCloud2
-from geometry_msgs.msg import PoseStamped, Twist
+from geometry_msgs.msg import PoseStamped, Twist, Pose
 from enum import Enum
 import queue
 import threading
@@ -26,6 +26,7 @@ class RosBridge:
         self.nav_state = NavigationState.NOT_INIT
         self.operation_status = OperationStatus.IDLE  # Current robot operation status
         self.robot_info = None  # Current robot information
+        self.current_pose = None  # Current robot pose
         self.nav_goal_pub = rospy.Publisher('/navigation_goal', PoseStamped, queue_size=1)
         self.cancel_nav_pub = rospy.Publisher('/cancel_nav', Bool, queue_size=1)
         self.reset_pos_pub = rospy.Publisher('/reset_robot_pos', PoseStamped, queue_size=1)
@@ -35,7 +36,61 @@ class RosBridge:
         self.video_sub = None
         self.operation_status_sub = rospy.Subscriber('/operation_status', Int32, self._operation_status_callback)
         self.robot_info_sub = rospy.Subscriber('/robot_info', String, self._robot_info_callback)
-        rospy.loginfo("RosBridge initialized, subscribing to operation_status and robot_info")
+        self.robot_pose_sub = rospy.Subscriber('/robot_pose', Pose, self._robot_pose_callback)
+        rospy.loginfo("RosBridge initialized, subscribing to operation_status, robot_info, and robot_pose")
+
+    def _robot_pose_callback(self, msg):
+        """Callback for robot pose updates"""
+        self.current_pose = msg
+        rospy.logdebug(f"Robot pose updated: position=({msg.position.x:.3f}, {msg.position.y:.3f}, {msg.position.z:.3f}), "
+                      f"orientation=({msg.orientation.x:.3f}, {msg.orientation.y:.3f}, {msg.orientation.z:.3f}, {msg.orientation.w:.3f})")
+
+    def get_current_pose(self):
+        """Get the current robot pose"""
+        return self.current_pose
+
+    def get_current_position(self):
+        """Get the current robot position as dict"""
+        if self.current_pose:
+            return {
+                "x": self.current_pose.position.x,
+                "y": self.current_pose.position.y,
+                "z": self.current_pose.position.z
+            }
+        return None
+
+    def get_current_orientation(self):
+        """Get the current robot orientation as dict"""
+        if self.current_pose:
+            return {
+                "x": self.current_pose.orientation.x,
+                "y": self.current_pose.orientation.y,
+                "z": self.current_pose.orientation.z,
+                "w": self.current_pose.orientation.w
+            }
+        return None
+
+    def get_current_pose_dict(self):
+        """Get the current robot pose as a dictionary"""
+        if self.current_pose:
+            return {
+                "position": {
+                    "x": self.current_pose.position.x,
+                    "y": self.current_pose.position.y,
+                    "z": self.current_pose.position.z
+                },
+                "orientation": {
+                    "x": self.current_pose.orientation.x,
+                    "y": self.current_pose.orientation.y,
+                    "z": self.current_pose.orientation.z,
+                    "w": self.current_pose.orientation.w
+                }
+            }
+        return None
+
+    def is_pose_available(self):
+        """Check if robot pose is available"""
+        return self.current_pose is not None
 
     def set_start_position(self, pose_data):
         if self.nav_state not in [NavigationState.NOT_INIT, NavigationState.IDLE]:
@@ -150,6 +205,19 @@ class RosBridge:
             rospy.logdebug("Robot is already in MANUAL control mode")
             return True  # Already in manual mode
 
+    def ensure_navigation_mode(self):
+        """Ensure robot is in navigation mode, send change command if not"""
+        if self.operation_status != OperationStatus.NAVIGATION:
+            rospy.loginfo(f"Robot is currently in {self.operation_status.name} mode, changing to NAVIGATION")
+            status_change_msg = Int32()
+            status_change_msg.data = OperationStatus.NAVIGATION.value
+            self.operation_status_change_pub.publish(status_change_msg)
+            rospy.loginfo("Sent operation status change command to NAVIGATION (4)")
+            return False  # Status was changed
+        else:
+            rospy.logdebug("Robot is already in NAVIGATION mode")
+            return True  # Already in navigation mode
+
     def change_operation_status(self, new_status):
         """Send a command to change the robot operation status"""
         if isinstance(new_status, OperationStatus):
@@ -177,6 +245,11 @@ class RosBridge:
         if self.nav_state != NavigationState.IDLE:
             raise Exception(f"Cannot start navigation in {self.nav_state.value} state")
 
+        # Ensure robot is in navigation mode before starting navigation
+        self.ensure_navigation_mode()
+        # Give a brief moment for the status change to take effect
+        rospy.sleep(0.1)
+
         goal_msg = PoseStamped()
         goal_msg.header.stamp = rospy.Time.now()
         goal_msg.header.frame_id = "map"
@@ -191,7 +264,7 @@ class RosBridge:
         self.nav_goal_pub.publish(goal_msg)
         self.nav_state = NavigationState.NAVIGATING
         self.goal_reached_sub = rospy.Subscriber('/goal_reached', Bool, self._goal_reached_callback, callback_args=completion_callback)
-        rospy.loginfo("Navigation started")
+        rospy.loginfo("Navigation started in NAVIGATION mode")
 
     def _goal_reached_callback(self, msg, completion_callback):
         if msg.data:
