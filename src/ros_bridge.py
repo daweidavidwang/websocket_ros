@@ -1,26 +1,41 @@
 #!/usr/bin/env python3
 
 import rospy
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, Int32, String
 from sensor_msgs.msg import Image, PointCloud2
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Twist
 from enum import Enum
 import queue
 import threading
+import json
 
 class NavigationState(Enum):
     NOT_INIT = "not_init"
     IDLE = "idle"
     NAVIGATING = "navigating"
 
+class OperationStatus(Enum):
+    IDLE = 0
+    MANUAL = 1
+    AUTOFILM = 2
+    FOLLOWING = 3
+    NAVIGATION = 4
+
 class RosBridge:
     def __init__(self):
         self.nav_state = NavigationState.NOT_INIT
+        self.operation_status = OperationStatus.IDLE  # Current robot operation status
+        self.robot_info = None  # Current robot information
         self.nav_goal_pub = rospy.Publisher('/navigation_goal', PoseStamped, queue_size=1)
         self.cancel_nav_pub = rospy.Publisher('/cancel_nav', Bool, queue_size=1)
         self.reset_pos_pub = rospy.Publisher('/reset_robot_pos', PoseStamped, queue_size=1)
+        self.cmd_vel_1_pub = rospy.Publisher('/cmd_vel_1', Twist, queue_size=1)
+        self.operation_status_change_pub = rospy.Publisher('/operation_status_change', Int32, queue_size=1)
         self.goal_reached_sub = None
         self.video_sub = None
+        self.operation_status_sub = rospy.Subscriber('/operation_status', Int32, self._operation_status_callback)
+        self.robot_info_sub = rospy.Subscriber('/robot_info', String, self._robot_info_callback)
+        rospy.loginfo("RosBridge initialized, subscribing to operation_status and robot_info")
 
     def set_start_position(self, pose_data):
         if self.nav_state not in [NavigationState.NOT_INIT, NavigationState.IDLE]:
@@ -39,6 +54,124 @@ class RosBridge:
         self.reset_pos_pub.publish(reset_msg)
         self.nav_state = NavigationState.IDLE
         rospy.loginfo("Start position set, navigation state is now IDLE")
+
+    def _operation_status_callback(self, msg):
+        """Callback for operation status updates from the robot"""
+        try:
+            # Convert int to enum if valid
+            new_status = OperationStatus(msg.data)
+            if self.operation_status != new_status:
+                rospy.loginfo(f"Operation status changed from {self.operation_status.name} ({self.operation_status.value}) "
+                            f"to {new_status.name} ({new_status.value})")
+                self.operation_status = new_status
+        except ValueError:
+            rospy.logwarn(f"Received invalid operation status: {msg.data}")
+
+    def _robot_info_callback(self, msg):
+        """Callback for robot information updates from the robot"""
+        try:
+            # Parse JSON string
+            robot_info_data = json.loads(msg.data)
+            self.robot_info = robot_info_data
+            
+            # Log robot info updates (only occasionally to avoid spam)
+            if rospy.get_time() % 10 < 1.0:  # Log every 10 seconds
+                data = robot_info_data.get("data", {})
+                battery = data.get("battery", "unknown")
+                status = data.get("status", "unknown")
+                rospy.logdebug(f"Robot info updated: status={status}, battery={battery}%")
+                
+        except json.JSONDecodeError as e:
+            rospy.logwarn(f"Failed to parse robot info JSON: {e}")
+        except Exception as e:
+            rospy.logerr(f"Error processing robot info: {e}")
+
+    def get_robot_info(self):
+        """Get the current robot information"""
+        return self.robot_info
+
+    def get_robot_battery(self):
+        """Get the current robot battery level"""
+        if self.robot_info and "data" in self.robot_info:
+            return self.robot_info["data"].get("battery", None)
+        return None
+
+    def get_robot_status_string(self):
+        """Get the current robot status as string from robot info"""
+        if self.robot_info and "data" in self.robot_info:
+            return self.robot_info["data"].get("status", None)
+        return None
+
+    def get_robot_diagnostics(self):
+        """Get robot diagnostic information (IMU, camera, motor)"""
+        if self.robot_info and "data" in self.robot_info:
+            data = self.robot_info["data"]
+            return {
+                "imu": data.get("imu", None),
+                "camera": data.get("camera", None),
+                "motor": data.get("motor", None)
+            }
+        return None
+
+    def get_robot_sw_version(self):
+        """Get the robot software version"""
+        if self.robot_info and "data" in self.robot_info:
+            return self.robot_info["data"].get("sw_version", None)
+        return None
+
+    def get_robot_accid(self):
+        """Get the robot account ID"""
+        if self.robot_info and "data" in self.robot_info:
+            return self.robot_info["data"].get("accid", None)
+        return None
+
+    def get_operation_status(self):
+        """Get the current robot operation status"""
+        return self.operation_status
+
+    def get_operation_status_name(self):
+        """Get the current robot operation status name as string"""
+        return self.operation_status.name
+
+    def get_operation_status_value(self):
+        """Get the current robot operation status value as integer"""
+        return self.operation_status.value
+
+    def ensure_manual_control_mode(self):
+        """Ensure robot is in manual control mode, send change command if not"""
+        if self.operation_status != OperationStatus.MANUAL:
+            rospy.loginfo(f"Robot is currently in {self.operation_status.name} mode, changing to MANUAL")
+            status_change_msg = Int32()
+            status_change_msg.data = OperationStatus.MANUAL.value
+            self.operation_status_change_pub.publish(status_change_msg)
+            rospy.loginfo("Sent operation status change command to MANUAL (1)")
+            return False  # Status was changed
+        else:
+            rospy.logdebug("Robot is already in MANUAL control mode")
+            return True  # Already in manual mode
+
+    def change_operation_status(self, new_status):
+        """Send a command to change the robot operation status"""
+        if isinstance(new_status, OperationStatus):
+            status_value = new_status.value
+            status_name = new_status.name
+        elif isinstance(new_status, int):
+            try:
+                status_enum = OperationStatus(new_status)
+                status_value = new_status
+                status_name = status_enum.name
+            except ValueError:
+                rospy.logerr(f"Invalid operation status value: {new_status}")
+                return False
+        else:
+            rospy.logerr(f"Invalid operation status type: {type(new_status)}")
+            return False
+        
+        status_change_msg = Int32()
+        status_change_msg.data = status_value
+        self.operation_status_change_pub.publish(status_change_msg)
+        rospy.loginfo(f"Sent operation status change command to {status_name} ({status_value})")
+        return True
 
     def start_navigation(self, goal_data, completion_callback):
         if self.nav_state != NavigationState.IDLE:
@@ -146,4 +279,26 @@ class RosBridge:
             self.video_sub.unregister()
             self.video_sub = None
             rospy.loginfo("Video stream subscription stopped")
+
+    def publish_cmd_vel_1(self, data):
+        """Publish manual control velocity commands to /cmd_vel_1 topic"""
+        # Ensure robot is in manual control mode before sending commands
+        self.ensure_manual_control_mode()
+        
+        twist_msg = Twist()
+        
+        # Extract linear velocities
+        twist_msg.linear.x = data.get("x", 0.0)
+        twist_msg.linear.y =  0.0
+        twist_msg.linear.z = 0.0
+        
+        # Extract angular velocities
+        twist_msg.angular.x = 0.0
+        twist_msg.angular.y = 0.0
+        twist_msg.angular.z = data.get("z", 0.0)
+
+        # Publish the command
+        self.cmd_vel_1_pub.publish(twist_msg)
+        # rospy.logdebug(f"Published cmd_vel_1: linear=[{twist_msg.linear.x:.3f}, {twist_msg.linear.y:.3f}, {twist_msg.linear.z:.3f}], "
+        #               f"angular=[{twist_msg.angular.x:.3f}, {twist_msg.angular.y:.3f}, {twist_msg.angular.z:.3f}]")
 

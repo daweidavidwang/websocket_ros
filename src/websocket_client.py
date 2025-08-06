@@ -165,6 +165,7 @@ class WebsocketClient:
             "request_stop_navigation": self.handle_stop_navigation,
             "request_start_point": self.handle_set_start_position,
             "request_robot_info": self.handle_robot_info,
+            "request_robot_manual_navigation": self.handle_robot_manual_navigation,
         }
 
         handler = handler_map.get(title)
@@ -369,19 +370,65 @@ class WebsocketClient:
         await self.send_control_response(msg, response)
 
     async def handle_robot_info(self, msg):
-        # Mock data as per original implementation
-        response = {
+        try:
+            robot_info = await to_thread(self.ros_bridge.get_robot_info)
+            info = robot_info.get("data", {})
+            info["worldPosition"] = {
+                "x": 0,
+                "y": 0,
+                "z": 0
+            }
+            response = {
+            "title": "response_robot_info",
+            "data": {
+                **info,
+                "robotCode": ROBOT_CODE,
+                "result": "ok"
+            }
+            }
+        except Exception as e:
+            logger.error(f"Error in handle_robot_info: {e}", extra={'guid': msg.get('guid')})
+            response = {
             "title": "response_robot_info",
             "data": {
                 "robotCode": ROBOT_CODE,
-                "accid": "PF_TRON1A_042",
-                "sw_version": "robot-tron1-2.0.10.20241111103012",
-                "imu": "OK", "camera": "OK", "motor": "OK",
-                "battery": 95, "status": "WALK",
-                "gridPosition": {"x": 100, "y": 200, "z": 0},
-                "result": "ok"
+                "result": "error",
+                "message": str(e)
             }
-        }
+            }
+        print(f"Robot info response: {response}")
+        await self.send_control_response(msg, response)
+
+    async def handle_robot_manual_navigation(self, msg):
+        try:
+            data = msg.get("data", {})
+            print(data)
+            x_velocity = data.get("x", 0)  # Forward/backward velocity ratio [-1, 1]
+            z_velocity = data.get("z", 0)  # Rotation angular velocity ratio [-1, 1]
+            
+            # Validate velocity ranges
+            if not (-1 <= x_velocity <= 1):
+                raise ValueError(f"x velocity {x_velocity} is out of range [-1, 1]")
+            if not (-1 <= z_velocity <= 1):
+                raise ValueError(f"z velocity {z_velocity} is out of range [-1, 1]")
+            
+            logger.info(f"Set manual navigation velocity: x={x_velocity}, z={z_velocity}", 
+                       extra={'guid': msg.get('guid')})
+            
+            response = {
+                "title": "response_robot_manual_navigation",
+                "data": {"result": "ok"}
+            }
+        except Exception as e:
+            logger.error(f"Error in handle_robot_manual_navigation: {e}", 
+                        extra={'guid': msg.get('guid')})
+            response = {
+                "title": "response_robot_manual_navigation",
+                "data": {"result": "error", "message": str(e)}
+            }
+        # Send the received msg out 30 times to "cmd_vel_1"
+        for _ in range(30):
+            await to_thread(self.ros_bridge.publish_cmd_vel_1, data)
         await self.send_control_response(msg, response)
 
     async def send_control_response(self, original_msg, response_data):

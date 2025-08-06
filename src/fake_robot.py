@@ -4,11 +4,14 @@ import rospy
 import numpy as np
 import cv2
 from sensor_msgs.msg import Image, PointCloud2, PointField
-from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import Bool, Header
+from geometry_msgs.msg import PoseStamped, Twist
+from std_msgs.msg import Bool, Header, Int32, String
 from cv_bridge import CvBridge
 import struct
 import argparse
+import json
+import time
+import uuid
 
 class FakeRobot:
     def __init__(self, log_level=rospy.INFO):
@@ -23,11 +26,25 @@ class FakeRobot:
         # Publisher for goal reached status
         self.goal_reached_pub = rospy.Publisher('/goal_reached', Bool, queue_size=1)
         
+        # Publisher for operation status (1Hz)
+        self.status_pub = rospy.Publisher('/operation_status', Int32, queue_size=10)
+        
+        # Publisher for robot information (1Hz)
+        self.robot_info_pub = rospy.Publisher('/robot_info', String, queue_size=10)
+        
         # CV Bridge for converting between OpenCV and ROS Image messages
         self.bridge = CvBridge()
         
         # Timer for goal reached callback
         self.goal_timer = None
+        
+        # Robot operation status (default: 0 = idle)
+        self.operation_status = 0
+        
+        # Robot information parameters
+        self.accid = "PF_TRON1A_042"
+        self.sw_version = "robot-tron1-2.0.10.20241111103012"
+        self.battery_level = 50  # Start with 95% battery
         
         # Image parameters
         self.width = 1920  # 1080P width
@@ -40,14 +57,30 @@ class FakeRobot:
         # Set up timer for 10Hz publishing (point clouds)
         self.pc_timer = rospy.Timer(rospy.Duration(1.0/10.0), self.publish_pointcloud)
         
+        # Set up timer for 1Hz publishing (operation status)
+        self.status_timer = rospy.Timer(rospy.Duration(1.0), self.publish_operation_status)
+        
+        # Set up timer for 1Hz publishing (robot information)
+        self.robot_info_timer = rospy.Timer(rospy.Duration(1.0), self.publish_robot_info)
+        
         # Subscribers for navigation topics
         self.nav_goal_sub = rospy.Subscriber('/navigation_goal', PoseStamped, self.navigation_goal_callback)
         self.cancel_nav_sub = rospy.Subscriber('/cancel_nav', Bool, self.cancel_navigation_callback)
         
+        # Subscriber for operation status change
+        self.status_change_sub = rospy.Subscriber('/operation_status_change', Int32, self.status_change_callback)
+        
+        # Subscriber for manual control commands
+        self.cmd_vel_1_sub = rospy.Subscriber('/cmd_vel_1', Twist, self.cmd_vel_1_callback)
+        
         rospy.loginfo("Fake robot node started. Publishing 1080P images at 30Hz on /cameraF/camera/color/image_raw")
         rospy.loginfo("Publishing point clouds at 10Hz on /cloud_registered")
         rospy.loginfo("Publishing goal reached status on /goal_reached topic")
+        rospy.loginfo("Publishing operation status at 1Hz on /operation_status topic")
+        rospy.loginfo("Publishing robot information at 1Hz on /robot_info topic")
         rospy.loginfo("Subscribed to /navigation_goal and /cancel_nav topics")
+        rospy.loginfo("Subscribed to /operation_status_change topic")
+        rospy.loginfo("Subscribed to /cmd_vel_1 topic for manual control commands")
 
     def navigation_goal_callback(self, msg):
         """Callback for navigation goal messages"""
@@ -66,6 +99,10 @@ class FakeRobot:
         rospy.loginfo(f"  W: {msg.pose.orientation.w:.3f}")
         rospy.loginfo("=" * 50)
         
+        # Change status to navigation mode
+        self.operation_status = 4  # Navigation status
+        rospy.loginfo("Operation status changed to: 4 (Navigation)")
+        
         # Cancel any existing goal timer
         if self.goal_timer is not None:
             self.goal_timer.shutdown()
@@ -82,11 +119,130 @@ class FakeRobot:
         rospy.loginfo(f"Cancel: {msg.data}")
         rospy.loginfo("*" * 30)
         
+        # Change status back to idle
+        self.operation_status = 0  # Idle status
+        rospy.loginfo("Operation status changed to: 0 (Idle)")
+        
         # Cancel the goal timer if it exists
         if self.goal_timer is not None:
             self.goal_timer.shutdown()
             self.goal_timer = None
             rospy.loginfo("Goal timer cancelled due to navigation cancellation")
+
+    def cmd_vel_1_callback(self, msg):
+        """Callback for manual control velocity commands"""
+        rospy.loginfo(">" * 40)
+        rospy.loginfo("MANUAL CONTROL COMMAND RECEIVED:")
+        rospy.loginfo(f"Linear velocity:")
+        rospy.loginfo(f"  X: {msg.linear.x:.3f} m/s")
+        # rospy.loginfo(f"  Y: {msg.linear.y:.3f} m/s")
+        # rospy.loginfo(f"  Z: {msg.linear.z:.3f} m/s")
+        rospy.loginfo(f"Angular velocity:")
+        # rospy.loginfo(f"  X: {msg.angular.x:.3f} rad/s")
+        # rospy.loginfo(f"  Y: {msg.angular.y:.3f} rad/s")
+        rospy.loginfo(f"  Z: {msg.angular.z:.3f} rad/s")
+        rospy.loginfo(">" * 40)
+        
+        # Change status to manual control mode if any velocity is non-zero
+        if (msg.linear.x != 0 or msg.linear.y != 0 or msg.linear.z != 0 or
+            msg.angular.x != 0 or msg.angular.y != 0 or msg.angular.z != 0):
+            if self.operation_status != 1:  # Only log if status is changing
+                self.operation_status = 1  # Manual control status
+                rospy.loginfo("Operation status changed to: 1 (Manual)")
+        else:
+            # If all velocities are zero, change back to idle
+            if self.operation_status == 1:  # Only change if currently in manual control
+                self.operation_status = 0  # Idle status
+                rospy.loginfo("Operation status changed to: 0 (Idle) - Manual control stopped")
+
+    def status_change_callback(self, msg):
+        """Callback for operation status change commands"""
+        rospy.loginfo("+" * 50)
+        rospy.loginfo("OPERATION STATUS CHANGE RECEIVED:")
+        rospy.loginfo(f"Previous status: {self.operation_status}")
+        rospy.loginfo(f"New status: {msg.data}")
+        rospy.loginfo("Status meanings:")
+        rospy.loginfo("  0: Idle")
+        rospy.loginfo("  1: Manual")
+        rospy.loginfo("  2: Autofilm")
+        rospy.loginfo("  3: Following")
+        rospy.loginfo("  4: Navigation")
+        rospy.loginfo("+" * 50)
+        
+        # Update the operation status
+        self.operation_status = msg.data
+        
+        # Immediately publish the new status
+        self.publish_operation_status(None)
+
+    def publish_operation_status(self, event):
+        """Callback function to publish operation status at 1Hz"""
+        try:
+            status_msg = Int32()
+            status_msg.data = self.operation_status
+            
+            self.status_pub.publish(status_msg)
+            
+            # Only log every 10th status message to avoid spam (every 10 seconds)
+            if event is None or rospy.get_time() % 10 < 1.0:
+                rospy.loginfo(f"Published operation status: {self.operation_status}")
+            
+        except Exception as e:
+            rospy.logerr(f"Error publishing operation status: {e}")
+
+    def get_status_string(self):
+        """Convert operation status integer to status string"""
+        status_map = {
+            0: "IDLE",
+            1: "WALK",      # Manual control = walking
+            2: "AUTOFILM",
+            3: "FOLLOWING", 
+            4: "NAVIGATION"
+        }
+        return status_map.get(self.operation_status, "UNKNOWN")
+
+    def publish_robot_info(self, event):
+        """Callback function to publish robot information at 1Hz"""
+        try:
+            # Create robot info message
+            robot_info = {
+                "accid": self.accid,
+                "title": "notify_robot_info",
+                "timestamp": int(time.time() * 1000),  # Current timestamp in milliseconds
+                "guid": str(uuid.uuid4()).replace("-", ""),  # Generate unique GUID
+                "data": {
+                    "accid": self.accid,
+                    "sw_version": self.sw_version,
+                    "imu": "OK",        # IMU diagnosis info
+                    "camera": "OK",     # Camera diagnosis info  
+                    "motor": "OK",      # Motor diagnosis info
+                    "battery": self.battery_level,  # Battery level
+                    "status": self.get_status_string()  # Robot operation mode
+                }
+            }
+            
+            # Convert to JSON string
+            robot_info_json = json.dumps(robot_info, separators=(',', ':'))
+            
+            # Create ROS message
+            info_msg = String()
+            info_msg.data = robot_info_json
+            
+            # Publish the robot info
+            self.robot_info_pub.publish(info_msg)
+            
+            # Only log every 10th info message to avoid spam (every 10 seconds)
+            if event is None or rospy.get_time() % 10 < 1.0:
+                rospy.loginfo(f"Published robot info: status={self.get_status_string()}, battery={self.battery_level}%")
+            
+            # Simulate battery drain (very slowly)
+            if self.battery_level > 10:
+                # Drain battery by 1% every ~10 minutes (600 seconds)
+                if rospy.get_time() % 600 < 1.0:
+                    self.battery_level -= 1
+            
+        except Exception as e:
+            rospy.logerr(f"Error publishing robot info: {e}")
 
     def goal_reached_callback(self, event):
         """Callback to publish goal reached status after 10 seconds"""
@@ -95,6 +251,10 @@ class FakeRobot:
         
         self.goal_reached_pub.publish(goal_reached_msg)
         rospy.loginfo("GOAL REACHED: Published True on /goal_reached topic")
+        
+        # Change status back to idle after reaching goal
+        self.operation_status = 0  # Idle status
+        rospy.loginfo("Operation status changed to: 0 (Idle) - Goal reached")
         
         # Reset the timer reference
         self.goal_timer = None
