@@ -6,13 +6,19 @@ from ros_bridge import RosBridge
 from websocket_client import WebsocketClient, set_log_level as set_ws_log_level
 import threading
 import argparse
+import os
 
 def main():
     parser = argparse.ArgumentParser(description='ROS WebSocket Bridge')
     parser.add_argument('--log-level', type=str, default='info',
                         choices=['debug', 'info', 'warn', 'error', 'fatal'],
                         help='Set the ROS logging level (default: info)')
+    parser.add_argument('--robot-code', type=str, default=os.environ.get("ROBOT_CODE"),
+                        help='The robot code, defaults to ROBOT_CODE environment variable.')
     args, _ = parser.parse_known_args()
+
+    if not args.robot_code:
+        parser.error("ROBOT_CODE must be provided via --robot-code argument or ROBOT_CODE environment variable.")
 
     log_level_mapping = {
         'debug': rospy.DEBUG,
@@ -29,7 +35,7 @@ def main():
     rospy.init_node('ros_websocket_bridge', anonymous=True, log_level=rospy_log_level)
     
     ros_bridge = RosBridge()
-    ws_client = WebsocketClient(ros_bridge)
+    ws_client = WebsocketClient(ros_bridge, args.robot_code)
     
     def run_websocket_client():
         """Run the asyncio event loop"""

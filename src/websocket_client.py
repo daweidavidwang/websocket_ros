@@ -13,8 +13,7 @@ import contextvars
 import functools
 import logging
 import queue
-
-ROBOT_CODE = "robot3234324232"
+import uuid
 
 # Configure logging
 class CustomFormatter(logging.Formatter):
@@ -67,8 +66,9 @@ async def to_thread(func, /, *args, **kwargs):
     return await loop.run_in_executor(None, func_call)
 
 class WebsocketClient:
-    def __init__(self, ros_bridge: RosBridge):
+    def __init__(self, ros_bridge: RosBridge, robot_code: str):
         self.ros_bridge = ros_bridge
+        self.robot_code = robot_code
         self.control_ws = None
         self.video_ws = None
         self.video_stream_task = None
@@ -77,7 +77,7 @@ class WebsocketClient:
     async def connect(self):
         control_uri = "wss://gj-test.mnt-aihub.com:8443/control"
         video_uri = "wss://gj-test.mnt-aihub.com:8443/video"
-        headers = {"client_type": "robot", "client_id": ROBOT_CODE}
+        headers = {"client_type": "robot", "client_id": self.robot_code}
 
         await asyncio.gather(
             self._connect_websocket(control_uri, headers, self._handle_control_messages, "control"),
@@ -114,11 +114,11 @@ class WebsocketClient:
                 heartbeat_data = {
                     "title": "response_heartbeat",
                     "timestamp": int(time.time() * 1000),
-                    "guid": "uuid-3456-req-vp",
+                    "guid": uuid.uuid4().hex,
                     "targetType": "robot",
                     "targetId": "heartbeat",
-                    "clientId": ROBOT_CODE,
-                    "data": {"robotCode": ROBOT_CODE, "result": "ok"}
+                    "clientId": self.robot_code,
+                    "data": {"robotCode": self.robot_code, "result": "ok"}
                 }
                 await self.control_ws.send(json.dumps(heartbeat_data))
                 await asyncio.sleep(5)
@@ -131,7 +131,7 @@ class WebsocketClient:
                 msg_json = json.loads(message)
                 logger.debug(f"Received control message: {msg_json}")
                 robot_code = msg_json.get("targetId", "None")
-                if robot_code != ROBOT_CODE:
+                if robot_code != self.robot_code:
                     logger.warning(f"Received message for different robot: {robot_code}, ignoring")
                     continue
                 await self._process_command(msg_json)
@@ -379,22 +379,20 @@ class WebsocketClient:
                 "z": 0
             }
             response = {
-            "title": "response_robot_info",
-            "data": {
-                **info,
-                "robotCode": ROBOT_CODE,
-                "result": "ok"
-            }
+                "title": "response_robot_info",
+                "data": {
+                    **info,
+                    "result": "ok"
+                }
             }
         except Exception as e:
             logger.error(f"Error in handle_robot_info: {e}", extra={'guid': msg.get('guid')})
             response = {
-            "title": "response_robot_info",
-            "data": {
-                "robotCode": ROBOT_CODE,
-                "result": "error",
-                "message": str(e)
-            }
+                "title": "response_robot_info",
+                "data": {
+                    "result": "error",
+                    "message": str(e)
+                }
             }
         print(f"Robot info response: {response}")
         await self.send_control_response(msg, response)
@@ -438,7 +436,7 @@ class WebsocketClient:
                 "guid": original_msg.get("guid"),
                 "targetType": "client",
                 "targetId": original_msg.get("clientId"),
-                "clientId": ROBOT_CODE,
+                "clientId": self.robot_code,
                 **response_data
             }
 
@@ -450,6 +448,6 @@ class WebsocketClient:
             if "requestType" in original_msg:
                 response["requestType"] = original_msg.get("requestType")
 
-            response["data"]["robotCode"] = ROBOT_CODE
+            response["data"]["robotCode"] = self.robot_code
             logger.debug(f"Sending control response: {response}")
             await self.control_ws.send(json.dumps(response))

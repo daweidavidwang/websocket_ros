@@ -28,7 +28,7 @@
     ```
     Inside the container, launch the test:
     ```sh
-    roslaunch ros_websocket_bridge solelaunch.launch
+    ROBOT_CODE=robot3234324232 roslaunch ros_websocket_bridge solelaunch.launch
     ```
 
 This will start the ROS-WebSocket connection for testing.
