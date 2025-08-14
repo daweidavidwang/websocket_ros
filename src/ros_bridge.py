@@ -42,8 +42,8 @@ class RosBridge:
     def _robot_pose_callback(self, msg):
         """Callback for robot pose updates"""
         self.current_pose = msg
-        rospy.logdebug(f"Robot pose updated: position=({msg.position.x:.3f}, {msg.position.y:.3f}, {msg.position.z:.3f}), "
-                      f"orientation=({msg.orientation.x:.3f}, {msg.orientation.y:.3f}, {msg.orientation.z:.3f}, {msg.orientation.w:.3f})")
+        # rospy.logdebug(f"Robot pose updated: position=({msg.position.x:.3f}, {msg.position.y:.3f}, {msg.position.z:.3f}), "
+        #               f"orientation=({msg.orientation.x:.3f}, {msg.orientation.y:.3f}, {msg.orientation.z:.3f}, {msg.orientation.w:.3f})")
 
     def get_current_pose(self):
         """Get the current robot pose"""

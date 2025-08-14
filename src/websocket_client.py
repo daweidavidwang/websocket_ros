@@ -43,6 +43,11 @@ handler = logging.StreamHandler()
 handler.setFormatter(CustomFormatter())
 logger.addHandler(handler)
 
+# WebSocket logging
+# logger_w = logging.getLogger("websockets")
+# logger_w.setLevel(logging.DEBUG)
+# logger_w.addHandler(logging.StreamHandler())
+
 def set_log_level(level_str: str):
     """Sets the logging level for the websocket_client logger."""
     level_map = {
@@ -65,23 +70,29 @@ async def to_thread(func, /, *args, **kwargs):
     func_call = functools.partial(ctx.run, func, *args, **kwargs)
     return await loop.run_in_executor(None, func_call)
 
+DEFAULT_VIDEO_URI = "ws://localhost:8444/video"
+DEFAULT_CONTROL_URI = "ws://localhost:8443/control"
+
 class WebsocketClient:
-    def __init__(self, ros_bridge: RosBridge, robot_code: str):
+    def __init__(self, ros_bridge: RosBridge, robot_code: str, control_uri: str = None, video_uri: str = None):
         self.ros_bridge = ros_bridge
         self.robot_code = robot_code
+        self.control_uri = control_uri or DEFAULT_CONTROL_URI
+        self.video_uri = video_uri or DEFAULT_VIDEO_URI
         self.control_ws = None
         self.video_ws = None
         self.video_stream_task = None
-        self.video_stream_queue:None|queue.Queue = None
+        self.video_stream_queue: queue.Queue = None
 
     async def connect(self):
-        control_uri = "wss://gj-test.mnt-aihub.com:8443/control"
-        video_uri = "wss://gj-test.mnt-aihub.com:8443/video"
+        logger.info(f"Robot code: {self.robot_code}")
+        logger.info(f"Connecting to control WebSocket at: {self.control_uri}")
+        logger.info(f"Connecting to video WebSocket at: {self.video_uri}")
         headers = {"client_type": "robot", "client_id": self.robot_code}
 
         await asyncio.gather(
-            self._connect_websocket(control_uri, headers, self._handle_control_messages, "control"),
-            self._connect_websocket(video_uri, headers, self._handle_video_messages, "video")
+            self._connect_websocket(self.control_uri, headers, self._handle_control_messages, "control"),
+            self._connect_websocket(self.video_uri, headers, self._handle_video_messages, "video")
         )
 
     async def _connect_websocket(self, uri, headers, message_handler, name):
@@ -96,17 +107,21 @@ class WebsocketClient:
                     elif name == "video":
                         self.video_ws = websocket
                         logger.info(f"{name.capitalize()} WebSocket connected")
-                        await websocket.wait_closed()
+                        await message_handler(websocket)
 
             except (websockets.exceptions.ConnectionClosed, ConnectionRefusedError) as e:
                 logger.warning(f"{name.capitalize()} WebSocket connection closed: {e}")
             except Exception as e:
                 logger.error(f"Error with {name} WebSocket: {e}")
             finally:
-                if name == "control": self.control_ws = None
-                if name == "video": self.video_ws = None
-                logger.info(f"Reconnecting {name} WebSocket in 5 seconds...")
-                await asyncio.sleep(5)
+                if name == "control": 
+                    self.control_ws = None
+                    logger.info(f"Reconnecting {name} WebSocket in 2 seconds...")
+                    await asyncio.sleep(2)
+                if name == "video": 
+                    self.video_ws = None
+                    logger.info(f"Reconnecting {name} WebSocket in 0.5 seconds...")
+                    await asyncio.sleep(0.5)
 
     async def _send_heartbeat(self):
         while self.control_ws and self.control_ws.open:
@@ -269,8 +284,9 @@ class WebsocketClient:
                 raise ValueError(f"Unsupported image encoding: {ros_image.encoding}")
             
             image = PILImage.fromarray(image_array, 'RGB')
+            image_rot = image.transpose(PILImage.ROTATE_180)
             img_buffer = io.BytesIO()
-            image.save(img_buffer, format='JPEG', quality=50)
+            image_rot.save(img_buffer, format='JPEG', quality=95)
             return (img_buffer, frame_id)
             
         except queue.Empty:
@@ -278,18 +294,20 @@ class WebsocketClient:
 
     async def _stream_video_frames(self):
         try:
-            while self.video_ws:
-                img_buffer, frame_id = await to_thread(self._get_video_frame)
-                await self.video_ws.send(img_buffer.getvalue())
-                logger.debug(f"Sent video frame: {frame_id}, size: {len(img_buffer.getvalue())} bytes")
+            while True:
+                try:
+                    img_buffer, frame_id = await to_thread(self._get_video_frame)
+                    if self.video_ws and self.video_ws.open:
+                        await self.video_ws.send(img_buffer.getvalue())
+                        logger.debug(f"Sent video frame: {frame_id}, size: {len(img_buffer.getvalue())} bytes")
+                except websockets.exceptions.ConnectionClosed as e:
+                    logger.warning(f"Video WebSocket connection closed. Reason: {e}")
+                except websockets.exceptions.ConnectionClosedOK:
+                    logger.warning("Video WebSocket connection closed normally.")
+                except websockets.exceptions.ConnectionClosedError as e:
+                    logger.warning(f"Video WebSocket connection closed with error. Reason: {e}")
         except asyncio.CancelledError:
             logger.debug(f"Video streaming task cancelled")
-        except websockets.exceptions.ConnectionClosed:
-            logger.warning("Video WebSocket connection closed, stopping video stream")
-        except websockets.exceptions.ConnectionClosedOK:
-            logger.warning("Video WebSocket connection closed normally, stopping video stream")
-        except websockets.exceptions.ConnectionClosedError:
-            logger.warning("Video WebSocket connection closed with error, stopping video stream")
         except Exception as e:
             logger.error(f"Error in video streaming task: {e}")
         finally:

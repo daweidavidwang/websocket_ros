@@ -32,3 +32,33 @@
     ```
 
 This will start the ROS-WebSocket connection for testing.
+
+## Configuration
+
+The WebSocket bridge can be configured using environment variables or command line arguments:
+
+### Environment Variables
+- `ROBOT_CODE`: The robot identification code (required)
+- `CONTROL_URI`: WebSocket URI for control messages (default: `ws://localhost:8443/control`)
+- `VIDEO_URI`: WebSocket URI for video streaming (default: `ws://localhost:8444/video`)
+
+### Command Line Arguments
+- `--robot-code`: The robot identification code
+- `--control-uri`: WebSocket URI for control messages  
+- `--video-uri`: WebSocket URI for video streaming
+- `--log-level`: Set logging level (debug, info, warn, error, fatal)
+
+### Example Usage
+```sh
+# Using environment variables
+export ROBOT_CODE=robot123
+export CONTROL_URI=ws://192.168.1.100:5001/control  
+export VIDEO_URI=ws://192.168.1.100:5002/video-stream
+roslaunch ros_websocket_bridge solelaunch.launch
+
+# Using command line arguments
+ROBOT_CODE=robot123 python3 src/bridge_node.py \
+  --control-uri ws://192.168.1.100:5001/control \
+  --video-uri ws://192.168.1.100:5002/video-stream \
+  --log-level debug
+```
