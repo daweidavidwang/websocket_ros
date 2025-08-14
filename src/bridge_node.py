@@ -15,6 +15,10 @@ def main():
                         help='Set the ROS logging level (default: info)')
     parser.add_argument('--robot-code', type=str, default=os.environ.get("ROBOT_CODE"),
                         help='The robot code, defaults to ROBOT_CODE environment variable.')
+    parser.add_argument('--control-uri', type=str, default=os.environ.get("CONTROL_URI"),
+                        help='The WebSocket URI for control messages (default: CONTROL_URI environment variable)')
+    parser.add_argument('--video-uri', type=str, default=os.environ.get("VIDEO_URI"),
+                        help='The WebSocket URI for video streaming (default: VIDEO_URI environment variable)')
     args, _ = parser.parse_known_args()
 
     if not args.robot_code:
@@ -35,7 +39,7 @@ def main():
     rospy.init_node('ros_websocket_bridge', anonymous=True, log_level=rospy_log_level)
     
     ros_bridge = RosBridge()
-    ws_client = WebsocketClient(ros_bridge, args.robot_code)
+    ws_client = WebsocketClient(ros_bridge, args.robot_code, args.control_uri, args.video_uri)
     
     def run_websocket_client():
         """Run the asyncio event loop"""
