@@ -114,7 +114,6 @@ class WebsocketClient:
 
     async def _connect_video_websocket(self, uri, headers, message_handler):
         while True:
-            task_canceled = False
             logger.info(f"Connecting to video WebSocket...")
             try:
                 async with websockets.connect(uri, extra_headers=headers, ping_interval=20) as websocket:
@@ -124,18 +123,15 @@ class WebsocketClient:
             except (websockets.exceptions.ConnectionClosed, ConnectionRefusedError) as e:
                 logger.warning(f"Video WebSocket connection closed: {e}")
             except asyncio.CancelledError:
-                task_canceled = True
-                logger.debug("Video WebSocket connection task was cancelled")
+                logger.info("Video WebSocket connection cancelled, not reconnecting.")
+                break
             except Exception as e:
                 logger.error(f"Error with Video WebSocket: {e}")
             finally:
                 self.video_ws = None
-                if task_canceled:
-                    logger.debug("Video WebSocket connection task was cancelled, not reconnecting")
-                    break
-                else:
-                    logger.info("Reconnecting Video WebSocket in 0.5 seconds...")
-                    await asyncio.sleep(0.5)
+
+            logger.info("Reconnecting Video WebSocket in 0.5 seconds...")
+            await asyncio.sleep(0.5)
 
     async def _send_heartbeat(self):
         while self.control_ws and self.control_ws.open:
@@ -207,6 +203,7 @@ class WebsocketClient:
     async def handle_image_capture(self, msg):
         try:
             image_msg = await to_thread(self.ros_bridge.get_image)
+            image_buffer = await to_thread(self._ros_image_to_jpeg, image_msg, quality=95)
             response = {"title": "response_image_capture"}
             response["data"] = {
                 "result": "ok",
@@ -215,7 +212,7 @@ class WebsocketClient:
                 "encoding": image_msg.encoding,
                 "is_bigendian": image_msg.is_bigendian,
                 "step": image_msg.step,
-                "data": image_msg.data.hex()
+                "data": image_buffer.getvalue().hex()
             }
             logger.info(f"Image captured successfully", extra={'guid': msg.get('guid')})
         except Exception as e:
@@ -223,6 +220,23 @@ class WebsocketClient:
             response["data"] = {"result": "error", "message": str(e)}
         
         await self.send_control_response(msg, response)
+
+    def _ros_image_to_jpeg(self, ros_image, quality):
+        if ros_image.encoding == "rgb8":
+            image_array = np.frombuffer(ros_image.data, dtype=np.uint8).reshape((ros_image.height, ros_image.width, 3))
+        elif ros_image.encoding == "bgr8":
+            image_array = np.frombuffer(ros_image.data, dtype=np.uint8).reshape((ros_image.height, ros_image.width, 3))
+            image_array = image_array[..., ::-1]
+        else:
+            raise ValueError(f"Unsupported image encoding: {ros_image.encoding}")
+        
+        image = PILImage.fromarray(image_array, 'RGB')
+        image = image.transpose(PILImage.ROTATE_180)
+        image = image.resize((1920,1080))
+        img_buffer = io.BytesIO()
+        image.save(img_buffer, format='JPEG', quality=quality)
+
+        return img_buffer
 
     async def handle_pointcloud_capture(self, msg):
         try:
@@ -273,10 +287,7 @@ class WebsocketClient:
                 logger.warning("Video stream already running, cannot start again", extra={'guid': msg.get('guid')})
             else:
                 self.video_stream_queue = await to_thread(self.ros_bridge.setup_video_stream)
-                self.video_stream_task = asyncio.gather(
-                    self._connect_video_websocket(self.video_uri, self.headers, self._handle_video_messages),
-                    self._stream_video_frames()
-                )
+                self.video_stream_task = asyncio.create_task(self._video_stream_task())
                 logger.info("Video stream started", extra={'guid': msg.get('guid')})
                 response["data"] = {"result": "ok"}
         except Exception as e:
@@ -291,47 +302,41 @@ class WebsocketClient:
         
         try:
             ros_image, frame_id = self.video_stream_queue.get(timeout=1.0)
-
-            if ros_image.encoding == "rgb8":
-                image_array = np.frombuffer(ros_image.data, dtype=np.uint8).reshape((ros_image.height, ros_image.width, 3))
-            elif ros_image.encoding == "bgr8":
-                image_array = np.frombuffer(ros_image.data, dtype=np.uint8).reshape((ros_image.height, ros_image.width, 3))
-                image_array = image_array[..., ::-1]
-            else:
-                raise ValueError(f"Unsupported image encoding: {ros_image.encoding}")
-            
-            image = PILImage.fromarray(image_array, 'RGB')
-            image = image.transpose(PILImage.ROTATE_180)
-            image = image.resize((1920,1080))
-            img_buffer = io.BytesIO()
-            image.save(img_buffer, format='JPEG', quality=95)
+            img_buffer = self._ros_image_to_jpeg(ros_image, quality=95)
             return (img_buffer, frame_id)
             
         except queue.Empty:
             raise Exception("Failed to get video frame within 1 second timeout")
 
     async def _stream_video_frames(self):
+        while True:
+            try:
+                img_buffer, frame_id = await to_thread(self._get_video_frame)
+                if self.video_ws and self.video_ws.open:
+                    await self.video_ws.send(img_buffer.getvalue())
+                    logger.debug(f"Sent video frame: {frame_id}, size: {len(img_buffer.getvalue())} bytes")
+            except websockets.exceptions.ConnectionClosed as e:
+                logger.warning(f"Video WebSocket connection closed. Reason: {e}")
+            except websockets.exceptions.ConnectionClosedOK:
+                logger.warning("Video WebSocket connection closed normally.")
+            except websockets.exceptions.ConnectionClosedError as e:
+                logger.warning(f"Video WebSocket connection closed with error. Reason: {e}")         
+
+    async def _video_stream_task(self):
         try:
-            while True:
-                try:
-                    img_buffer, frame_id = await to_thread(self._get_video_frame)
-                    if self.video_ws and self.video_ws.open:
-                        await self.video_ws.send(img_buffer.getvalue())
-                        logger.debug(f"Sent video frame: {frame_id}, size: {len(img_buffer.getvalue())} bytes")
-                except websockets.exceptions.ConnectionClosed as e:
-                    logger.warning(f"Video WebSocket connection closed. Reason: {e}")
-                except websockets.exceptions.ConnectionClosedOK:
-                    logger.warning("Video WebSocket connection closed normally.")
-                except websockets.exceptions.ConnectionClosedError as e:
-                    logger.warning(f"Video WebSocket connection closed with error. Reason: {e}")
+            await asyncio.gather(
+                self._connect_video_websocket(self.video_uri, self.headers, self._handle_video_messages),
+                self._stream_video_frames()
+            )
         except asyncio.CancelledError:
-            logger.debug(f"Video streaming task cancelled")
+            logger.debug("Video stream task cancelled")
         except Exception as e:
-            logger.error(f"Error in video streaming task: {e}")
+            logger.error(f"Error in video stream task: {e}")
         finally:
             logger.debug("Cleanning up video stream task...")
             await to_thread(self.ros_bridge.stop_video_stream)
             self.video_stream_queue = None
+            self.video_stream_task = None
             logger.debug("Video stream task cleaned up")
 
     async def handle_video_stop(self, msg):
@@ -339,7 +344,6 @@ class WebsocketClient:
             response = {"title": "response_video_stop"}
             if self.video_stream_task:
                 self.video_stream_task.cancel()
-                self.video_stream_task = None
                 logger.info("Video stream stopped", extra={'guid': msg.get('guid')})
                 response["data"] = {"result": "ok"}
             else:
