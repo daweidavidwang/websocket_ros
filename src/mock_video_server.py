@@ -8,6 +8,9 @@ import ssl
 import logging
 import argparse
 from pathlib import Path
+import aiofiles
+from datetime import datetime
+import os
 
 # Configure logging
 class CustomFormatter(logging.Formatter):
@@ -287,7 +290,8 @@ class MockVideoServer:
                         if frame_count % 30 == 0:  # Log every 30 frames (~1 second at 30fps)
                             avg_frame_size = total_bytes / frame_count
                             elapsed_time = time.time() - self.start_time
-                            fps = frame_count / elapsed_time if elapsed_time > 0 else 0
+                            self.start_time = time.time()  # Reset start time for next interval
+                            fps = 30 / elapsed_time if elapsed_time > 0 else 0
                             
                             logger.info(f"Video stats for {client_id}: "
                                       f"Frames: {frame_count}, "
@@ -299,11 +303,17 @@ class MockVideoServer:
                                        f"Frame #{frame_count}, Size: {frame_size} bytes")
                         
                         # Optionally save frame to file (for debugging)
-                        # if frame_count <= 5:  # Save first 5 frames
-                        #     frame_path = f"debug_frame_{client_id}_{frame_count}.jpg"
-                        #     with open(frame_path, "wb") as f:
-                        #         f.write(message)
-                        #     logger.debug(f"Saved frame to {frame_path}")
+                        if frame_count <= 5:  # Save first 5 frames
+                            # Create a folder for sample frames based on current datetime (once per server run)
+                            if not hasattr(self, "sample_frame_dir"):
+                                dt_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                                self.sample_frame_dir = f"logs/sample_frame_{dt_str}"
+                                os.makedirs(self.sample_frame_dir, exist_ok=True)
+
+                            frame_path = os.path.join(self.sample_frame_dir, f"frame_{client_id}_{frame_count}.jpg")
+                            async with aiofiles.open(frame_path, "wb") as f:
+                                await f.write(message)
+                            logger.debug(f"Saved frame to {frame_path}")
                         
                 except Exception as e:
                     logger.error(f"Error processing video message from {client_id}: {e}")

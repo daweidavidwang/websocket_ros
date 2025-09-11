@@ -423,7 +423,7 @@ class FakeRobot:
                    cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 3)
         
         # Resize the image to 160x90 for testing
-        img = cv2.resize(img, (1280, 720), interpolation=cv2.INTER_LINEAR)
+        # img = cv2.resize(img, (1280, 720), interpolation=cv2.INTER_LINEAR)
         
         return img
 

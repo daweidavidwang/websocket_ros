@@ -8,7 +8,7 @@ import io
 from PIL import Image as PILImage
 import numpy as np
 from ros_bridge import RosBridge
-from sensor_msgs.msg import PointField
+from sensor_msgs import msg as RosSensorMsg
 import contextvars
 import functools
 import logging
@@ -207,11 +207,11 @@ class WebsocketClient:
             response = {"title": "response_image_capture"}
             response["data"] = {
                 "result": "ok",
-                "height": image_msg.height,
-                "width": image_msg.width,
-                "encoding": image_msg.encoding,
-                "is_bigendian": image_msg.is_bigendian,
-                "step": image_msg.step,
+                # "height": image_msg.height,
+                # "width": image_msg.width,
+                # "encoding": image_msg.encoding,
+                # "is_bigendian": image_msg.is_bigendian,
+                # "step": image_msg.step,
                 "data": image_buffer.getvalue().hex()
             }
             logger.info(f"Image captured successfully", extra={'guid': msg.get('guid')})
@@ -222,19 +222,27 @@ class WebsocketClient:
         await self.send_control_response(msg, response)
 
     def _ros_image_to_jpeg(self, ros_image, quality):
-        if ros_image.encoding == "rgb8":
-            image_array = np.frombuffer(ros_image.data, dtype=np.uint8).reshape((ros_image.height, ros_image.width, 3))
-        elif ros_image.encoding == "bgr8":
-            image_array = np.frombuffer(ros_image.data, dtype=np.uint8).reshape((ros_image.height, ros_image.width, 3))
-            image_array = image_array[..., ::-1]
-        else:
-            raise ValueError(f"Unsupported image encoding: {ros_image.encoding}")
-        
-        image = PILImage.fromarray(image_array, 'RGB')
-        image = image.transpose(PILImage.ROTATE_180)
-        image = image.resize((1920,1080))
         img_buffer = io.BytesIO()
-        image.save(img_buffer, format='JPEG', quality=quality)
+
+        if type(ros_image) == RosSensorMsg.CompressedImage:
+            img_buffer.write(ros_image.data)
+        elif type(ros_image) == RosSensorMsg.Image:
+            if ros_image.encoding == "rgb8":
+                image_array = np.frombuffer(ros_image.data, dtype=np.uint8).reshape((ros_image.height, ros_image.width, 3))
+            elif ros_image.encoding == "bgr8":
+                image_array = np.frombuffer(ros_image.data, dtype=np.uint8).reshape((ros_image.height, ros_image.width, 3))
+                image_array = image_array[..., ::-1]
+            else:
+                raise ValueError(f"Unsupported image encoding: {ros_image.encoding}")
+            
+            image = PILImage.fromarray(image_array, 'RGB')
+            # Rotate and resize if image from realsense
+            if image.width < 1920:
+                image = image.transpose(PILImage.ROTATE_180)
+                image = image.resize((1920, 1080))
+            image.save(img_buffer, format='JPEG', quality=quality)
+        else:
+            raise ValueError(f"Unsupported ROS image type: {type(ros_image)}")
 
         return img_buffer
 
@@ -247,10 +255,10 @@ class WebsocketClient:
                 Converts a list of PointField objects to a dictionary with field sizes.
                 """
                 datatype_to_size = {
-                    PointField.INT8: 1, PointField.UINT8: 1,
-                    PointField.INT16: 2, PointField.UINT16: 2,
-                    PointField.INT32: 4, PointField.UINT32: 4,
-                    PointField.FLOAT32: 4, PointField.FLOAT64: 8,
+                    RosSensorMsg.PointField.INT8: 1, RosSensorMsg.PointField.UINT8: 1,
+                    RosSensorMsg.PointField.INT16: 2, RosSensorMsg.PointField.UINT16: 2,
+                    RosSensorMsg.PointField.INT32: 4, RosSensorMsg.PointField.UINT32: 4,
+                    RosSensorMsg.PointField.FLOAT32: 4, RosSensorMsg.PointField.FLOAT64: 8,
                 }
                 fields_info_dict = {}
                 for field in fields:

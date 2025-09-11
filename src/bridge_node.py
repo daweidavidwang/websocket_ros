@@ -19,6 +19,8 @@ def main():
                         help='The WebSocket URI for control messages (default: CONTROL_URI environment variable)')
     parser.add_argument('--video-uri', type=str, default=os.environ.get("VIDEO_URI"),
                         help='The WebSocket URI for video streaming (default: VIDEO_URI environment variable)')
+    parser.add_argument('--camera-topic', type=str, default=os.environ.get("CAMERA_TOPIC"),
+                        help='The ROS topic for camera images (default: CAMERA_TOPIC environment variable)')
     args, _ = parser.parse_known_args()
 
     if not args.robot_code:
@@ -38,7 +40,7 @@ def main():
 
     rospy.init_node('ros_websocket_bridge', anonymous=True, log_level=rospy_log_level)
     
-    ros_bridge = RosBridge()
+    ros_bridge = RosBridge(camera_topic=args.camera_topic)
     ws_client = WebsocketClient(ros_bridge, args.robot_code, args.control_uri, args.video_uri)
     
     def run_websocket_client():

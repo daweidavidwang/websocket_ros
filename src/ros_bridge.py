@@ -2,7 +2,7 @@
 
 import rospy
 from std_msgs.msg import Bool, Int32, String
-from sensor_msgs.msg import Image, PointCloud2
+from sensor_msgs.msg import Image, CompressedImage, PointCloud2
 from geometry_msgs.msg import PoseStamped, Twist, Pose
 from enum import Enum
 import queue
@@ -22,7 +22,7 @@ class OperationStatus(Enum):
     NAVIGATION = 4
 
 class RosBridge:
-    def __init__(self):
+    def __init__(self, camera_topic=None):
         self.nav_state = NavigationState.NOT_INIT
         self.operation_status = OperationStatus.IDLE  # Current robot operation status
         self.robot_info = None  # Current robot information
@@ -37,6 +37,10 @@ class RosBridge:
         self.operation_status_sub = rospy.Subscriber('/operation_status', Int32, self._operation_status_callback)
         self.robot_info_sub = rospy.Subscriber('/robot_info', String, self._robot_info_callback)
         self.robot_pose_sub = rospy.Subscriber('/robot_pose', Pose, self._robot_pose_callback)
+
+        self.camera_topic = camera_topic or '/cameraF/camera/color/image_raw'
+        # self.camera_topic = '/gimbal_cam/image_raw/compressed'
+
         rospy.loginfo("RosBridge initialized, subscribing to operation_status, robot_info, and robot_pose")
 
     def _robot_pose_callback(self, msg):
@@ -300,8 +304,11 @@ class RosBridge:
                 sub.unregister()
                 rospy.logdebug("Image callback executed, subscriber unregistered")
 
-        sub = rospy.Subscriber('/cameraF/camera/color/image_raw', Image, image_callback)
-        
+        if self.camera_topic.endswith("/compressed"):
+            sub = rospy.Subscriber(self.camera_topic, CompressedImage, image_callback)
+        else:
+            sub = rospy.Subscriber(self.camera_topic, Image, image_callback)
+
         try:
             return img_queue.get(timeout=1.0)
         except queue.Empty:
@@ -337,13 +344,18 @@ class RosBridge:
             nonlocal frame_id
             try:
                 if vs_queue.full():
-                    vs_queue.get_nowait()
+                    msg, frame_id = vs_queue.get_nowait()
+                    rospy.logdebug(f"Video frame dropped: {frame_id}")
                 vs_queue.put_nowait((msg, frame_id))
                 frame_id = frame_id + 1
             except Exception as e:
                 rospy.logerr(f"Error in video frame callback: {e}")
 
-        self.video_sub = rospy.Subscriber('/cameraF/camera/color/image_raw', Image, frame_callback)
+        if self.camera_topic.endswith("/compressed"):
+            self.video_sub = rospy.Subscriber(self.camera_topic, CompressedImage, frame_callback)
+        else:
+            self.video_sub = rospy.Subscriber(self.camera_topic, Image, frame_callback)
+            
         rospy.loginfo("Video stream subscription setup")
         return vs_queue
 
