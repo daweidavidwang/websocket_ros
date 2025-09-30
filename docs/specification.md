@@ -32,6 +32,7 @@ Both connections use headers:
   - Set initial position
 - **Robot Status**: Reports robot information and health status
 - **Heartbeat**: Maintains connection with periodic heartbeat messages
+- **Posture Control**: Stand up and sit down sequences via robot command service
 
 ## ROS Topics
 
@@ -44,6 +45,9 @@ Both connections use headers:
 - `/navigation_goal` (geometry_msgs/PoseStamped): Navigation target position
 - `/cancel_nav` (std_msgs/Bool): Cancel current navigation
 - `/reset_robot_pos` (geometry_msgs/PoseStamped): Reset robot initial position
+
+### ROS Services
+- `robot_command` (highlevel_websocket_control/CommandService): High-level robot posture & motion commands (e.g., stand, walk, sit)
 
 ## WebSocket Message Protocol
 
@@ -136,6 +140,36 @@ All messages use JSON format with common fields:
   "data": {
     "position": {"x": 0.0, "y": 0.0, "z": 0.0},
     "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}
+  }
+}
+```
+
+#### Stand Up Request
+```json
+{
+  "title": "request_standup_start",
+  "timestamp": 1680000002000,
+  "guid": "uuid-standup-req",
+  "targetType": "robot",
+  "targetId": "robot-code",
+  "clientId": "client-id",
+  "data": {
+    "robotCode": "TRON1A-104454Mhz"
+  }
+}
+```
+
+#### Sit Down Request
+```json
+{
+  "title": "request_sitdown_start",
+  "timestamp": 1680000002000,
+  "guid": "uuid-sitdown-req",
+  "targetType": "robot",
+  "targetId": "robot-code",
+  "clientId": "client-id",
+  "data": {
+    "robotCode": "TRON1A-104454Mhz"
   }
 }
 ```
@@ -267,6 +301,38 @@ All messages use JSON format with common fields:
 }
 ```
 
+#### Stand Up Response
+```json
+{
+  "title": "response_standup_start",
+  "timestamp": 1680000002500,
+  "guid": "uuid-standup-req",
+  "targetType": "client",
+  "targetId": "client-id",
+  "clientId": "robot-code",
+  "data": {
+    "robotCode": "TRON1A-104454Mhz",
+    "result": "ok"
+  }
+}
+```
+
+#### Sit Down Response
+```json
+{
+  "title": "response_sitdown_start",
+  "timestamp": 1680000002500,
+  "guid": "uuid-sitdown-req",
+  "targetType": "client",
+  "targetId": "client-id",
+  "clientId": "robot-code",
+  "data": {
+    "robotCode": "TRON1A-104454Mhz",
+    "result": "ok"
+  }
+}
+```
+
 ### Video Streaming
 Video frames are sent as a binary JPEG blob to the video WebSocket.
 
@@ -286,6 +352,7 @@ Video frames are sent as a binary JPEG blob to the video WebSocket.
 - **Heartbeat Interval**: 5 seconds
 - **Video Quality**: JPEG compression at 50% quality
 - **Point Cloud Format**: XYZRGB with 16-byte point step
+- **Posture Control Sequence**: Sit → Stand → (wait status=STAND) → Walk (wait status=WALK); Walk → Sit(wait status=SIT)
 
 ### Error Handling
 - Automatic WebSocket reconnection with 5-second retry interval
@@ -299,6 +366,24 @@ The `fake_robot.py` node provides:
 - Realistic indoor point clouds at 10Hz (5500+ points)
 - Simulated navigation goal responses (20-second delay)
 - Navigation cancellation support
+- (Planned) Simulated posture status transitions for stand/sit validation
+
+## Posture Control Logic
+The posture control feature leverages the `robot_command` service:
+
+Stand Up Flow:
+1. Send `stand` command via `robot_command`.
+2. Poll / subscribe to robot status (implementation-specific) until status string == `STAND`.
+3. Send `walk` command.
+4. Wait until status string == `WALK`.
+5. Emit `response_standup_start` with result.
+
+Sit Down Flow:
+1. Send `sit` command.
+2. Wait until status string == `SIT`.
+3. Emit `response_sitdown_start` with result.
+
+Errors (timeouts, service failures) should respond with `result": "error"` and an error description field (future extension) while keeping the message schema stable.
 
 ## Launch Configuration
 

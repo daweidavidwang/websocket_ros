@@ -53,11 +53,12 @@ def set_log_level(level_str: str):
     logger.info(f"Mock video server log level set to {logging.getLevelName(level)}")
 
 class MockVideoServer:
-    def __init__(self, host="localhost", control_port=8443, video_port=8444, auto_start_video=True):
+    def __init__(self, host="localhost", control_port=8443, video_port=8444, auto_start_video=True, standup_sitdown_test=False):
         self.host = host
         self.control_port = control_port
         self.video_port = video_port
         self.auto_start_video = auto_start_video
+        self.standup_sitdown_test = standup_sitdown_test
         self.connected_clients = {}
         self.video_frame_count = {}
         self.start_time = time.time()
@@ -86,6 +87,12 @@ class MockVideoServer:
                 # Start additional test commands task
                 test_commands_task = asyncio.create_task(
                     self.send_additional_test_commands(websocket, client_id)
+                )
+
+            if self.standup_sitdown_test:
+                # Start standup/sitdown test task
+                standup_sitdown_task = asyncio.create_task(
+                    self.run_standup_sitdown_test(websocket, client_id)
                 )
             
             # Listen for incoming messages
@@ -119,6 +126,11 @@ class MockVideoServer:
                 test_commands_task.cancel()
                 logger.debug(f"Cancelled test commands task for client: {client_id}")
             
+            # Cancel standup/sitdown test task if it exists
+            if 'standup_sitdown_task' in locals() and not standup_sitdown_task.done():
+                standup_sitdown_task.cancel()
+                logger.debug(f"Cancelled standup/sitdown test task for client: {client_id}")
+            
             if client_id and client_id in self.connected_clients:
                 del self.connected_clients[client_id]
                 logger.info(f"Cleaned up connection info for client: {client_id}")
@@ -151,6 +163,16 @@ class MockVideoServer:
             response.update({
                 "title": "response_image_capture",
                 "data": {"result": "ok", "message": "Image capture acknowledged"}
+            })
+        elif title == "request_standup_start":
+            response.update({
+                "title": "response_standup_start",
+                "data": {"result": "ok"}
+            })
+        elif title == "request_sitdown_start":
+            response.update({
+                "title": "response_sitdown_start",
+                "data": {"result": "ok"}
             })
         else:
             response.update({
@@ -241,6 +263,50 @@ class MockVideoServer:
             
         except Exception as e:
             logger.error(f"Error sending additional test commands to {client_id}: {e}")
+
+    async def run_standup_sitdown_test(self, websocket, client_id):
+        """Send standup and sitdown test commands to client"""
+        try:
+            # Wait for connection to be established
+            await asyncio.sleep(2)
+            
+            # Send standup request
+            standup_request = {
+                "title": "request_standup_start",
+                "timestamp": int(time.time() * 1000),
+                "guid": f"mock_standup_{int(time.time())}",
+                "targetType": "robot",
+                "targetId": client_id,
+                "clientId": "mock_server",
+                "data": {
+                    "robotCode": "TRON1A-104454Mhz"
+                }
+            }
+            
+            await websocket.send(json.dumps(standup_request))
+            logger.info(f"Sent request_standup_start to client: {client_id}")
+            
+            # Wait before sending sitdown command
+            await asyncio.sleep(20)
+            
+            # Send sitdown request
+            sitdown_request = {
+                "title": "request_sitdown_start",
+                "timestamp": int(time.time() * 1000),
+                "guid": f"mock_sitdown_{int(time.time())}",
+                "targetType": "robot",
+                "targetId": client_id,
+                "clientId": "mock_server",
+                "data": {
+                    "robotCode": "TRON1A-104454Mhz"
+                }
+            }
+            
+            await websocket.send(json.dumps(sitdown_request))
+            logger.info(f"Sent request_sitdown_start to client: {client_id}")
+            
+        except Exception as e:
+            logger.error(f"Error sending standup/sitdown test commands to {client_id}: {e}")
 
     async def handle_video_connection(self, websocket, path):
         """Handle video WebSocket connections and receive frames"""
@@ -426,6 +492,8 @@ def main():
                        help="Automatically send request_video_start to clients (default: enabled)")
     parser.add_argument("--no-auto-start-video", action="store_true",
                        help="Disable automatic video start requests")
+    parser.add_argument("--standup-sitdown-test", action="store_true",
+                       help="Enable standup/sitdown test commands")
     
     args = parser.parse_args()
     
@@ -436,7 +504,7 @@ def main():
     auto_start_video = args.auto_start_video and not args.no_auto_start_video
     
     # Create and start server
-    server = MockVideoServer(args.host, args.control_port, args.video_port, auto_start_video)
+    server = MockVideoServer(args.host, args.control_port, args.video_port, auto_start_video, args.standup_sitdown_test)
     
     try:
         asyncio.run(server.start_server(

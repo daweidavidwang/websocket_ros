@@ -29,23 +29,38 @@ class RosBridge:
         self.current_pose = None  # Current robot pose
         self.nav_goal_pub = rospy.Publisher('/navigation_goal', PoseStamped, queue_size=1)
         self.cancel_nav_pub = rospy.Publisher('/cancel_nav', Bool, queue_size=1)
-        self.reset_pos_pub = rospy.Publisher('/reset_robot_pos', PoseStamped, queue_size=1)
+        self.reset_pos_pub = rospy.Publisher('/reset_robot_pos', PoseStamped, queue_size=1, latch=True)
         self.cmd_vel_1_pub = rospy.Publisher('/cmd_vel_1', Twist, queue_size=1)
         self.operation_status_change_pub = rospy.Publisher('/operation_status_change', Int32, queue_size=1)
+        self.robot_command_srv = None  # Will be initialized when needed
         self.goal_reached_sub = None
         self.video_sub = None
         self.operation_status_sub = rospy.Subscriber('/operation_status', Int32, self._operation_status_callback)
         self.robot_info_sub = rospy.Subscriber('/robot_info', String, self._robot_info_callback)
-        self.robot_pose_sub = rospy.Subscriber('/robot_pose', Pose, self._robot_pose_callback)
+        self.robot_pose_sub = rospy.Subscriber('/robot_pose', PoseStamped, self._robot_pose_callback)
 
         self.camera_topic = camera_topic or '/cameraF/camera/color/image_raw'
         # self.camera_topic = '/gimbal_cam/image_raw/compressed'
+
+        reset_msg = PoseStamped()
+        reset_msg.header.stamp = rospy.Time.now()
+        reset_msg.header.frame_id = "map"
+        # reset_msg.pose.position.x = -0.5
+        # reset_msg.pose.position.y = 6.3
+        reset_msg.pose.position.x = 0.0
+        reset_msg.pose.position.y = 0.0
+        reset_msg.pose.position.z = 0.6
+        reset_msg.pose.orientation.x = 0.0
+        reset_msg.pose.orientation.y = 0.0
+        reset_msg.pose.orientation.z = 0.0
+        reset_msg.pose.orientation.w = 1.0
+        self.reset_pos_pub.publish(reset_msg)
 
         rospy.loginfo("RosBridge initialized, subscribing to operation_status, robot_info, and robot_pose")
 
     def _robot_pose_callback(self, msg):
         """Callback for robot pose updates"""
-        self.current_pose = msg
+        self.current_pose = msg.pose
         # rospy.logdebug(f"Robot pose updated: position=({msg.position.x:.3f}, {msg.position.y:.3f}, {msg.position.z:.3f}), "
         #               f"orientation=({msg.orientation.x:.3f}, {msg.orientation.y:.3f}, {msg.orientation.z:.3f}, {msg.orientation.w:.3f})")
 
@@ -92,10 +107,6 @@ class RosBridge:
             }
         return None
 
-    def is_pose_available(self):
-        """Check if robot pose is available"""
-        return self.current_pose is not None
-
     def set_start_position(self, pose_data):
         if self.nav_state not in [NavigationState.NOT_INIT, NavigationState.IDLE]:
             raise Exception(f"Cannot set start position in {self.nav_state.value} state")
@@ -111,6 +122,28 @@ class RosBridge:
         reset_msg.pose.orientation.z = pose_data.get("orientation", {}).get("z", 0.0)
         reset_msg.pose.orientation.w = pose_data.get("orientation", {}).get("w", 1.0)
         self.reset_pos_pub.publish(reset_msg)
+
+        # Wait for the reset to take effect
+        rospy.sleep(2.0)
+
+        # Check if the robot has moved to the reset position
+        current_pos = self.get_current_position()
+        if current_pos:
+            reset_pos = pose_data.get("position", {})
+            
+            # Calculate distance between reset position and current position
+            dx = current_pos["x"] - reset_pos.get("x")
+            dy = current_pos["y"] - reset_pos.get("y")
+            dz = current_pos["z"] - reset_pos.get("z")
+            distance = (dx**2 + dy**2 + dz**2)**0.5
+            
+            if distance > 0.5:
+                raise Exception(f"Failed to set start position: robot distance from target is {distance:.3f}m (>0.5m)")
+            
+            rospy.loginfo(f"Start position set successfully, robot is {distance:.3f}m from target")
+        else:
+            raise Exception("Failed to set start position: no current pose available")
+        
         self.nav_state = NavigationState.IDLE
         rospy.loginfo("Start position set, navigation state is now IDLE")
 
@@ -134,7 +167,7 @@ class RosBridge:
             self.robot_info = robot_info_data
             
             # Log robot info updates (only occasionally to avoid spam)
-            if rospy.get_time() % 10 < 1.0:  # Log every 10 seconds
+            if int(rospy.get_time()) % 10 == 0:  # Log every 10 seconds
                 data = robot_info_data.get("data", {})
                 battery = data.get("battery", "unknown")
                 status = data.get("status", "unknown")
@@ -386,4 +419,133 @@ class RosBridge:
         self.cmd_vel_1_pub.publish(twist_msg)
         # rospy.logdebug(f"Published cmd_vel_1: linear=[{twist_msg.linear.x:.3f}, {twist_msg.linear.y:.3f}, {twist_msg.linear.z:.3f}], "
         #               f"angular=[{twist_msg.angular.x:.3f}, {twist_msg.angular.y:.3f}, {twist_msg.angular.z:.3f}]")
-
+        
+    def _send_robot_command(self, command, args=None):
+        """
+        Send a command to the robot via the ROS service
+        
+        Args:
+            command (str): The command to send (e.g., 'stand', 'walk', 'twist')
+            args (dict, optional): Arguments for the command, if needed
+        
+        Returns:
+            tuple: (success, message) from the service response
+        """
+        if args is None:
+            args = {}
+            
+        # Lazy initialization of the service proxy
+        if self.robot_command_srv is None:
+            try:
+                from highlevel_websocket_control.srv import CommandService
+                rospy.wait_for_service('robot_command', timeout=5.0)
+                self.robot_command_srv = rospy.ServiceProxy('robot_command', CommandService)
+                rospy.loginfo("Connected to robot_command service")
+            except ImportError as e:
+                rospy.logerr(f"Failed to import CommandService: {e}")
+                raise Exception(f"Failed to import CommandService: {e}. Please make sure the highlevel_websocket_control package is installed.")
+            except rospy.ROSException as e:
+                rospy.logerr(f"Failed to connect to robot_command service: {e}")
+                raise Exception(f"Robot command service not available: {e}")
+        
+        try:
+            # Create command JSON
+            command_data = {
+                'command': command,
+                'args': args
+            }
+            
+            # Serialize to JSON string
+            command_json = json.dumps(command_data)
+            
+            # Call the service
+            rospy.loginfo(f"Sending robot command: {command} with args: {args}")
+            response = self.robot_command_srv(command_json)
+            
+            if response.success:
+                rospy.loginfo(f"Robot command succeeded: {response.message}")
+            else:
+                rospy.logwarn(f"Robot command failed: {response.message}")
+                
+            return response.success, response.message
+            
+        except rospy.ServiceException as e:
+            error_msg = f"Service call failed: {e}"
+            rospy.logerr(error_msg)
+            return False, error_msg
+    
+    def _wait_for_robot_status(self, expected_status, timeout=30.0):
+        """
+        Wait for the robot status to match the expected status
+        
+        Args:
+            expected_status (str): The expected robot status string
+            timeout (float): Maximum time to wait in seconds
+            
+        Returns:
+            bool: True if the status matched within the timeout, False otherwise
+        """
+        start_time = rospy.get_time()
+        rate = rospy.Rate(5)  # Check 5 times per second
+        
+        rospy.loginfo(f"Waiting for robot status to become '{expected_status}'...")
+        
+        while not rospy.is_shutdown():
+            current_status = self.get_robot_status_string()
+            
+            if current_status == expected_status:
+                rospy.loginfo(f"Robot status is now '{expected_status}'")
+                return True
+                
+            if rospy.get_time() - start_time > timeout:
+                rospy.logwarn(f"Timeout waiting for robot status to become '{expected_status}', current status: '{current_status}'")
+                return False
+                
+            rate.sleep()
+            
+        return False
+            
+    def stand_up(self):
+        """
+        Make the robot stand up by sending stand and walk commands
+        
+        Raises:
+            Exception: If any step in the stand up process fails
+        """
+        # First send 'stand' command
+        success, message = self._send_robot_command('stand')
+        if not success:
+            raise Exception(f"Failed to send stand command: {message}")
+        
+        # Wait for robot status to become 'STAND'
+        if not self._wait_for_robot_status('STAND'):
+            raise Exception("Timeout waiting for robot to reach STAND status")
+        
+        # Then send 'walk' command
+        success, message = self._send_robot_command('walk')
+        if not success:
+            raise Exception(f"Failed to send walk command: {message}")
+        
+        # Wait for robot status to become 'WALK'
+        if not self._wait_for_robot_status('WALK'):
+            raise Exception("Timeout waiting for robot to reach WALK status")
+        
+        rospy.loginfo("Robot successfully stood up and entered WALK state")
+    
+    def sit_down(self):
+        """
+        Make the robot sit down by sending sit command
+        
+        Raises:
+            Exception: If any step in the sit down process fails
+        """
+        # Send 'sit' command
+        success, message = self._send_robot_command('sit')
+        if not success:
+            raise Exception(f"Failed to send sit command: {message}")
+        
+        # Wait for robot status to become 'SIT'
+        if not self._wait_for_robot_status('SIT'):
+            raise Exception("Timeout waiting for robot to reach SIT status")
+        
+        rospy.loginfo("Robot successfully sat down")

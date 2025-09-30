@@ -140,13 +140,37 @@ Implemented in `ros_bridge.py:11-14`
 
 ## Robot Control Request Processing
 
-**Status**: Not implemented in current version
+**Status**: Posture (stand/sit) control integrated via `robot_command` service; additional movement controls TBD.
 
-**Planned Implementation**:
-- Direct robot movement commands (velocity control)
-- Emergency stop functionality
-- Manual mode switching
-- Integration with robot control topics
+### Posture Control (Stand / Sit)
+Implemented using ROS service `robot_command` (type `highlevel_websocket_control/CommandService`).
+
+Service request payload (JSON string argument): `{ "command": "stand" }`, `{ "command": "walk" }`, `{ "command": "sit" }`.
+
+#### Stand Up Sequence
+1. Invoke service with `stand`.
+2. Await robot status transition to `STAND` (polling or subscription logic in `RosBridge`).
+3. Invoke service with `walk`.
+4. Await status `WALK`.
+5. Send WebSocket response `response_standup_start` with `result: ok`.
+
+#### Sit Down Sequence
+1. Invoke service with `sit`.
+2. Await status `SIT`.
+3. Send WebSocket response `response_sitdown_start` with `result: ok`.
+
+#### Error Handling
+- Timeout while waiting for status → respond `result: error`.
+- Service failure → respond `result: error`.
+- Invalid state (e.g., already WALK when starting stand) → respond `result: error`.
+
+#### Thread/Async Boundary
+Service calls executed inside `to_thread()` to avoid blocking asyncio loop; status wait implemented with periodic non-blocking checks or callback events bridged via `asyncio.run_coroutine_threadsafe()`.
+
+#### Future Control Extensions
+- Velocity / twist streaming commands
+- Emergency stop command mapping
+- Stair / IMU enable toggles (supported by service args)
 
 ## Implementation Achievements
 
@@ -176,6 +200,7 @@ Implemented in `ros_bridge.py:11-14`
 3. **Phase 3**: ✅ Navigation state machine implemented
 4. **Phase 4**: ✅ Video streaming migrated to new architecture
 5. **Phase 5**: ✅ Ready for testing and validation with `fake_robot.py`
+6. **Phase 6**: ✅ Posture stand/sit control integrated
 
 ### Key Files:
 - `src/bridge_node.py`: Main entry point with threading integration

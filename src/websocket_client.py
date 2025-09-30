@@ -191,6 +191,9 @@ class WebsocketClient:
             "request_start_point": self.handle_set_start_position,
             "request_robot_info": self.handle_robot_info,
             "request_robot_manual_navigation": self.handle_robot_manual_navigation,
+            "request_robot_positioning": self.handle_robot_positioning,
+            "request_standup_start": self.handle_standup_start,
+            "request_sitdown_start": self.handle_sitdown_start,
         }
 
         handler = handler_map.get(title)
@@ -487,6 +490,84 @@ class WebsocketClient:
         # Send the received msg out 30 times to "cmd_vel_1"
         for _ in range(30):
             await to_thread(self.ros_bridge.publish_cmd_vel_1, data)
+        await self.send_control_response(msg, response)
+
+    async def handle_robot_positioning(self, msg):
+        try:
+            # Get robot position and orientation from ROS bridge
+            pose_info = await to_thread(self.ros_bridge.get_current_pose_dict)
+            if pose_info is None:
+                raise ValueError("Robot pose information is not available")
+            response = {
+                "title": "response_robot_positioning",
+                "data": {
+                    "position": pose_info["position"],
+                    "orientation": pose_info["orientation"],
+                    "result": "ok"
+                }
+            }
+            logger.info("Robot positioning response sent", extra={'guid': msg.get('guid')})
+        except Exception as e:
+            logger.error(f"Error in handle_robot_positioning: {e}", extra={'guid': msg.get('guid')})
+            response = {
+                "title": "response_robot_positioning",
+                "data": {
+                    "result": "error",
+                    "message": str(e)
+                }
+            }
+        await self.send_control_response(msg, response)
+
+    async def handle_standup_start(self, msg):
+        try:
+            logger.info(f"Starting standup...", extra={'guid': msg.get('guid')})
+            
+            # Call the ROS bridge method to execute the stand up sequence
+            await to_thread(self.ros_bridge.stand_up)
+
+            response = {
+                "title": "response_standup_start", 
+                "data": {
+                    "result": "ok"
+                }
+            }
+            logger.info(f"Standup completed successfully", extra={'guid': msg.get('guid')})
+        except Exception as e:
+            logger.error(f"Error in handle_standup_start: {e}", extra={'guid': msg.get('guid')})
+            response = {
+                "title": "response_standup_start",
+                "data": {
+                    "result": "error",
+                    "message": str(e)
+                }
+            }
+        
+        await self.send_control_response(msg, response)
+        
+    async def handle_sitdown_start(self, msg):
+        try:
+            logger.info(f"Starting sitdown...", extra={'guid': msg.get('guid')})
+
+            # Call the ROS bridge method to execute the sit down sequence
+            await to_thread(self.ros_bridge.sit_down)
+            
+            response = {
+                "title": "response_sitdown_start", 
+                "data": {
+                    "result": "ok"
+                }
+            }
+            logger.info(f"Sitdown completed successfully", extra={'guid': msg.get('guid')})
+        except Exception as e:
+            logger.error(f"Error in handle_sitdown_start: {e}", extra={'guid': msg.get('guid')})
+            response = {
+                "title": "response_sitdown_start",
+                "data": {
+                    "result": "error",
+                    "message": str(e)
+                }
+            }
+        
         await self.send_control_response(msg, response)
 
     async def send_control_response(self, original_msg, response_data):

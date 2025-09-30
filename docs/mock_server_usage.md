@@ -138,6 +138,7 @@ The mock server provides detailed logging:
 --log-level LEVEL        Set logging level (debug, info, warning, error, critical)
 --auto-start-video       Automatically send request_video_start to clients (default: enabled)
 --no-auto-start-video    Disable automatic video start requests
+--standup-sitdown-test   Enable standup/sitdown test commands
 ```
 
 ### Bridge Client Options

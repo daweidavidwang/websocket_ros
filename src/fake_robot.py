@@ -4,7 +4,7 @@ import rospy
 import numpy as np
 import cv2
 from sensor_msgs.msg import Image, PointCloud2, PointField
-from geometry_msgs.msg import PoseStamped, Twist
+from geometry_msgs.msg import PoseStamped, Twist, Pose  # Add this import
 from std_msgs.msg import Bool, Header, Int32, String
 from cv_bridge import CvBridge
 import struct
@@ -32,6 +32,9 @@ class FakeRobot:
         # Publisher for robot information (1Hz)
         self.robot_info_pub = rospy.Publisher('/robot_info', String, queue_size=10)
         
+        # Publisher for robot pose
+        self.pose_pub = rospy.Publisher('/robot_pose', Pose, queue_size=10)
+
         # CV Bridge for converting between OpenCV and ROS Image messages
         self.bridge = CvBridge()
         
@@ -62,6 +65,9 @@ class FakeRobot:
         
         # Set up timer for 1Hz publishing (robot information)
         self.robot_info_timer = rospy.Timer(rospy.Duration(1.0), self.publish_robot_info)
+        
+        # Set up timer for 5Hz publishing (robot pose)
+        self.pose_timer = rospy.Timer(rospy.Duration(0.2), self.publish_robot_pose)
         
         # Subscribers for navigation topics
         self.nav_goal_sub = rospy.Subscriber('/navigation_goal', PoseStamped, self.navigation_goal_callback)
@@ -447,6 +453,28 @@ class FakeRobot:
             
         except Exception as e:
             rospy.logerr(f"Error publishing image: {e}")
+
+    def publish_robot_pose(self, event):
+        """Publish mock robot pose at 5Hz"""
+        pose_msg = Pose()
+        # Mock pose: moving in a small circle, height fixed
+        t = rospy.get_time()
+        pose_msg.position.x = 2.0 + 1.0 * np.cos(t * 0.2)
+        pose_msg.position.y = 1.0 + 1.0 * np.sin(t * 0.2)
+        pose_msg.position.z = 0.0
+
+        # Orientation: facing tangent to the circle
+        angle = t * 0.2 + np.pi / 2
+        qw = np.cos(angle / 2)
+        qz = np.sin(angle / 2)
+        pose_msg.orientation.x = 0.0
+        pose_msg.orientation.y = 0.0
+        pose_msg.orientation.z = qz
+        pose_msg.orientation.w = qw
+
+        # Publish the pose message
+        self.pose_pub.publish(pose_msg)
+        rospy.loginfo(f"Published robot pose: {pose_msg.position.x}, {pose_msg.position.y}, {pose_msg.position.z}")
 
     def run(self):
         """Keep the node running"""
