@@ -45,10 +45,10 @@ class RosBridge:
         reset_msg = PoseStamped()
         reset_msg.header.stamp = rospy.Time.now()
         reset_msg.header.frame_id = "map"
-        # reset_msg.pose.position.x = -0.5
-        # reset_msg.pose.position.y = 6.3
-        reset_msg.pose.position.x = 0.0
-        reset_msg.pose.position.y = 0.0
+        reset_msg.pose.position.x = -0.8
+        reset_msg.pose.position.y = 5
+        # reset_msg.pose.position.x = 0.0
+        # reset_msg.pose.position.y = 0.0
         reset_msg.pose.position.z = 0.6
         reset_msg.pose.orientation.x = 0.0
         reset_msg.pose.orientation.y = 0.0
